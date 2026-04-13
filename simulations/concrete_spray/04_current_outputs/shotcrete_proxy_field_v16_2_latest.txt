@@ -1,0 +1,11 @@
+Exact proxy field export (v16_2)
+Run id: 20260331_142550
+Config hash: c8fac23f8779fa5d
+Finalize reason: quiet_tail
+Time s: 11.517
+Receiver path: /CAVE_LOWPOLY/temp_collider
+Target source cell count: 525
+Exported exact field cells: 525
+Coverage area m2: 0.091476
+Volume proxy m3: 0.001383
+Nozzle world: [13.838482856750488, 18.07836151123047, 2.5105948448181152]

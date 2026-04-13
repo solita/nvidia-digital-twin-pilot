@@ -1,0 +1,20 @@
+Shotcrete proxy->cave exact-field import mapping (v17_8b)
+Source field JSON: D:/Solita/Cave Sim/Scripts\shotcrete_proxy_field_v16_2_run_20260325_152756.json
+Source run id: 20260325_152756
+Target mesh path: /CAVE_collision_proxy/CAVE_LOWPOLY/cave_collision/Cube_001
+Triangle count: 10049
+Source cells: 271
+Accepted cells: 271
+Rejected cells: 0
+Accept fraction: 1.0000
+Reject distance: 0
+Reject receive: 0
+Reject occlusion: 0
+Source area m2: 0.047219
+Mapped area m2: 0.047219
+Coverage ratio: 1.0000
+Source volume proxy m3: 0.000417
+Mapped volume proxy m3: 0.000417
+Volume ratio: 1.0000
+receive_dot avg/p05/p50/p95: 0.6206 / 0.3820 / 0.6923 / 0.7552
+distance avg/p05/p50/p95: 0.1173 / 0.0209 / 0.1142 / 0.1909

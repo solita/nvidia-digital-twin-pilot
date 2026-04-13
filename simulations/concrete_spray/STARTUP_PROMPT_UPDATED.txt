@@ -1,0 +1,960 @@
+MASTER CONTINUATION PROMPT FOR THIS WORKSPACE
+End-of-day rewrite date: 2026-04-05
+
+Read this file first tomorrow.
+Treat this file as the single source of truth for restart, continuation, and historical context.
+Do not ask the user to re-explain the project before reading this file.
+
+==================================================
+1. WHAT THIS PROJECT IS
+==================================================
+
+This workspace is an Isaac Sim / Omniverse cave shotcrete simulation project.
+
+There are two branches of work:
+
+Branch A = measurement / export-import branch
+- Purpose: measurable field export from the spray receiver pipeline, then import and mapping back to the cave.
+- Status: already working before today.
+- Rule: preserve it unless the user explicitly asks to change it.
+
+Branch B = direct-cave visual preview branch
+- Purpose: show visible particles flying through air, hitting the real cave wall, and leaving a retained sprayed result on that real cave mesh.
+- Status at end of today: working in viewport and user-approved.
+- Rule: this is the branch worked on today.
+
+Long-term target:
+- believable visual shotcrete spraying on the cave wall
+- eventually more realistic material behavior
+- eventually robot-like nozzle movement / machine integration
+- eventually richer measurement and control connections if needed
+
+==================================================
+2. TOMORROW RESTART INSTRUCTIONS
+==================================================
+
+If continuing the visual preview branch tomorrow:
+
+1. Work in Branch B, not Branch A.
+2. Open this scene:
+   `01_scenes/boolean Applied ver3_preview_particles.usdc`
+3. Main Branch B script:
+   `02_core_scripts/shotcrete_direct_cave_preview_v1.py`
+4. Fastest visual launch:
+   `run_direct_cave_preview_v1.sh`
+5. Fastest headless validation:
+   `run_direct_cave_preview_validate_v1.sh`
+6. Preserve Branch A unless the user explicitly redirects work there.
+
+If the user says only:
+"Read STARTUP_PROMPT_UPDATED.txt and continue"
+then continue from Branch B current state described below.
+
+==================================================
+3. CURRENT WORKING STATE AT END OF TODAY
+==================================================
+
+Branch B is now working as a user-facing preview.
+
+Current visible behavior:
+- particles fly through space from the preview nozzle
+- particles collide with the real cave wall
+- particles retain as a wall-backed sprayed buildup
+- nozzle moves through space during the spray
+- retained result looks flatter and more wall-conforming than the original sphere pile
+- close-up-safe viewport mode is active, so the unwanted square preview sheet is no longer shown
+
+Important viewport rule:
+- the continuous retained coat is still computed internally for stats and tuning
+- but the continuous coat mesh is hidden in the viewport on purpose
+- the visible retained result is currently the wall-backed wet buildup splats
+- this is the safest close-camera mode
+
+User approval state:
+- after the close-up-safe fix, the user reported the result as "perfect"
+
+==================================================
+4. OFFICIAL BASELINES TO REMEMBER
+==================================================
+
+There are two important "latest" states:
+
+A. Clean validated baseline for tomorrow
+- run id: `20260405_192555`
+- meaning: clean headless validation baseline after the close-up-safe fix
+- finalize reason: `quiet_tail`
+- emitted: `3119`
+- captured: `3119`
+- deposit instances: `1692`
+- wet coat instances: `1692`
+- deposit cells: `1692`
+- avg layers per cell: about `1.81`
+- max layers per cell: `11`
+- continuous coat still computed internally for tuning
+- continuous coat mesh hidden in viewport
+
+B. Final manual viewport confirmation by the user
+- run id: `20260405_193331`
+- meaning: latest manual viewport run after the user visually checked the result
+- finalize reason: `timeline_stopped`
+- emitted: `3119`
+- captured: `3119`
+- deposit instances: `1720`
+- wet coat instances: `1720`
+- deposit cells: `1720`
+- continuous coat vertices: `986`
+- continuous coat faces: `915`
+- continuous coat area m2: `7.525`
+- user response after this stage: final result approved
+
+Important note:
+- `04_current_outputs/shotcrete_direct_cave_preview_v1_latest.json`
+- `04_current_outputs/shotcrete_direct_cave_preview_v1_latest.txt`
+currently reflect the latest manual viewport run `20260405_193331`, not the cleanest headless validation run.
+
+For "what is the approved visual state?" use `20260405_193331`.
+For "what is the clean validated restart baseline?" use `20260405_192555`.
+
+==================================================
+5. FILES THAT MATTER MOST
+==================================================
+
+Branch B scene
+- `01_scenes/boolean Applied ver3_preview_particles.usdc`
+
+Branch B main scripts
+- `02_core_scripts/shotcrete_direct_cave_preview_v1.py`
+- `02_core_scripts/shotcrete_direct_cave_preview_launcher_v1.py`
+- `02_core_scripts/shotcrete_direct_cave_preview_validate_v1.py`
+
+Branch B launch helpers
+- `run_direct_cave_preview_v1.sh`
+- `run_direct_cave_preview_validate_v1.sh`
+
+Latest Branch B outputs
+- `04_current_outputs/shotcrete_direct_cave_preview_v1_latest.json`
+- `04_current_outputs/shotcrete_direct_cave_preview_v1_latest.txt`
+
+Branch A scene references
+- `01_scenes/CAVE_clean_master.usdc`
+- `01_scenes/boolean Applied ver3_calibration.usdc`
+- `01_scenes/boolean Applied ver3.usdc`
+
+Branch A scripts
+- `02_core_scripts/shotcrete_microburst_v16_2_proxy_receiver_exact_field_export.py`
+- `02_core_scripts/shotcrete_proxy_to_cave_map_v17_8b_exact_field_import_new_cave_autodetect.py`
+- `02_core_scripts/shotcrete_one_click_pipeline_v1.py`
+
+==================================================
+6. BRANCH A STATUS AND GUARDRAILS
+==================================================
+
+Branch A was already working before today and was not the focus of today.
+
+Branch A purpose:
+- measurable export / import pipeline
+- exact field handling
+- map data back onto the cave
+
+Branch A rule:
+- do not modify it unless the user explicitly asks
+
+Known Branch A milestone references remain important:
+- `05_reference_milestones/A_exact_field_real_cave_baseline`
+- `05_reference_milestones/B_frozen_standoff_winner`
+
+==================================================
+7. EXACT CURRENT BRANCH B SETTINGS
+==================================================
+
+Main settings in `02_core_scripts/shotcrete_direct_cave_preview_v1.py` at end of day:
+
+Emission and flight
+- `EMIT_DURATION_SECONDS = 6.0`
+- `TARGET_PARTICLES_PER_SEC = 520.0`
+- `SPRAY_SPEED_MPS = 16.0`
+- `SPRAY_CONE_DEG = 3.8`
+- `CAPTURE_DISTANCE_M = 0.12`
+
+Sweep area
+- `SWEEP_PATCH_WIDTH_M = 3.20`
+- `SWEEP_PATCH_HEIGHT_M = 2.30`
+- `SWEEP_RASTER_PASSES = 15`
+- `SWEEP_TARGET_JITTER_M = 0.110`
+
+Nozzle motion
+- `NOZZLE_MOTION_FOLLOW_U = 0.82`
+- `NOZZLE_MOTION_FOLLOW_V = 0.66`
+- `NOZZLE_MOTION_BOB_AMPLITUDE_M = 0.10`
+- `NOZZLE_MOTION_SWAY_AMPLITUDE_M = 0.06`
+
+Continuous coat tuning
+- `CONTINUOUS_COAT_GRID_STEP_M = 0.100`
+- `CONTINUOUS_COAT_MARGIN_M = 0.320`
+- `CONTINUOUS_COAT_RAW_SUPPORT_MIN = 0.06`
+- `CONTINUOUS_COAT_MAX_EDGE_STRETCH = 2.50`
+- `CONTINUOUS_COAT_MAX_FACE_AREA_MULT = 4.50`
+
+Visibility / safety toggles
+- `SHOW_WET_COAT_SPLATS = True`
+- `SHOW_CONTINUOUS_COAT_MESH = False`
+- `HIDE_SOURCE_PROXY_GEOMETRY = True`
+
+Meaning of the final visibility mode:
+- wet retained buildup is visible
+- continuous coat mesh is hidden in viewport
+- runtime source clutter is pruned
+- close-up artifact risk is minimized
+
+==================================================
+8. WHAT WAS BROKEN WHEN TODAY STARTED
+==================================================
+
+Today started from a broken Branch B preview situation.
+
+What the user wanted:
+- visible particles flying to the real cave wall and sticking there
+
+What was missing:
+- no working preview branch logic recovered in the curated workspace
+- no ready-made live particle scaffold wired to the preview scene
+- no usable physics / spray architecture in the scene for this branch
+
+What the preview scene did contain:
+- the cave mesh
+- preview source locators
+- overlay / importer-side geometry
+
+What it did not contain:
+- a working direct-cave preview system
+- recovered operational preview rig
+- ready particle emission / collision / retention path
+
+Root cause:
+- this was not a small parameter issue
+- it was an architectural incompleteness problem
+
+Correct strategy:
+- rebuild a minimal reliable Branch B direct-cave preview system from the known scene prims and validated geometric capture logic
+
+==================================================
+9. FULL CHRONOLOGY OF TODAY'S WORK
+==================================================
+
+This section is intentionally detailed so it can later be simplified into posters, diagrams, timelines, and symbolic visuals.
+
+----------------------------------
+STEP 1. Workspace and scene audit
+----------------------------------
+
+Goal
+- understand what really existed in the curated workspace
+- verify exact scene prims for the preview branch
+
+Problem
+- older prompt history referenced files and architecture that were not fully present in the actual curated folder
+
+Actions
+- read the existing handoff material
+- inspected workspace structure
+- confirmed that older references to `MASTER_SUMMARY.md` were stale
+- confirmed that `MASTER_SUMMARY_UPDATED.md` had effectively been the old handoff path
+- audited the preview scene headlessly
+
+Key findings
+- nozzle locator:
+  `/CAVE_collision_proxy/PreviewSpraySource/NozzleLocator`
+- aim locator:
+  `/CAVE_collision_proxy/PreviewSpraySource/AimLocator`
+- real cave target mesh:
+  `/CAVE_collision_proxy/CAVE_LOWPOLY/cave_collision/Cube_001`
+
+Result
+- the exact branch-B target geometry was confirmed
+- enough scene truth was available to rebuild the missing preview logic
+
+Poster seed
+- simple idea: "Map before motion"
+- symbol: magnifying glass over cave nodes and locator dots
+
+---------------------------------------------
+STEP 2. Direct-cave preview branch recovery
+---------------------------------------------
+
+Goal
+- create a new working Branch B preview path without disturbing Branch A
+
+Problem
+- there was no recovered live preview donor script in the curated workspace
+- there was no ready-made operational preview scaffold
+
+Files created
+- `02_core_scripts/shotcrete_direct_cave_preview_v1.py`
+- `02_core_scripts/shotcrete_direct_cave_preview_launcher_v1.py`
+- `RUN_DIRECT_CAVE_PREVIEW_V1.bat`
+
+Solution
+- built a preview-only script for direct cave spraying
+- kept it fully separate from Branch A
+- used known scene locator paths and cave mesh path
+
+Result
+- Branch B gained its own dedicated executable path
+
+Poster seed
+- simple idea: "Build a missing bridge"
+- symbol: broken gap replaced by a new beam from nozzle to cave wall
+
+------------------------------------------------------
+STEP 3. New visible particle emission and wall capture
+------------------------------------------------------
+
+Goal
+- make particles visibly fly in air and retain on the actual cave wall
+
+Problem
+- the user had no working live visual preview
+
+Technical solution
+- visible kinematic spray particles
+- triangle-mesh hit testing against the real cave mesh
+- retention logic that converts successful hits into deposited cave-surface instances
+- nozzle and aim markers
+- debug ray line
+- launcher that opens the scene and starts the preview automatically
+
+Result
+- the core visual requirement was restored:
+  particles flew
+  particles hit the wall
+  particles stayed there
+
+Validated early successful state
+- run id: `20260404_185622`
+- emitted: `700`
+- captured: `700`
+- finalize reason: `quiet_tail`
+
+Poster seed
+- simple idea: "From invisible math to visible impact"
+- symbol: yellow particle arc turning into white wall marks
+
+-----------------------------------------
+STEP 4. First coverage-area improvement
+-----------------------------------------
+
+Goal
+- avoid a tiny local pile and make the spray sweep across the wall
+
+Problem
+- the early restored preview only hit a small localized region
+
+Solution
+- upgraded the burst into a rastered sweep pattern
+- widened the target patch
+- introduced controlled target jitter
+
+Early sweep settings
+- width `0.85 m`
+- height `0.60 m`
+- passes `6`
+- jitter `0.045 m`
+
+Result
+- Branch B evolved from a single impact pile into a painted wall patch
+
+Poster seed
+- simple idea: "From dot to patch"
+- symbol: one bright spot widening into a brushed rectangle on the cave wall
+
+--------------------------------------------------
+STEP 5. Batch launch path bug and validation repair
+--------------------------------------------------
+
+Goal
+- make launching and revalidation reliable
+
+Problem
+- Isaac Sim `--exec` was failing because the workspace path contained spaces
+- the launcher path was being truncated at the first space
+
+Root cause
+- quoting / path handling issue in the batch launch setup
+
+Fix
+- changed the batch workflow so it changes into `02_core_scripts`
+- executes the launcher by relative filename
+- avoids passing a space-heavy full path to `--exec`
+
+Files updated / added
+- updated `RUN_DIRECT_CAVE_PREVIEW_V1.bat`
+- added `02_core_scripts/shotcrete_direct_cave_preview_validate_v1.py`
+- added `RUN_DIRECT_CAVE_PREVIEW_VALIDATE_V1.bat`
+
+Validation helper behavior
+- launches the preview
+- waits for completion
+- closes the stage
+- exits Isaac cleanly
+
+Result
+- both visual launch and headless validation became repeatable
+
+Poster seed
+- simple idea: "Path broken by spaces"
+- symbol: a command path split by scissors at each blank space, then repaired into a short direct route
+
+--------------------------------------------------------------
+STEP 6. Replace sphere pile with flatter retained buildup cells
+--------------------------------------------------------------
+
+Goal
+- improve the look of retained material on the wall
+
+Problem
+- one sphere per captured particle looked like floating marbles rather than sprayed concrete
+
+Solution
+- replaced the retained look with flatter surface-aligned deposit cells
+- each cell stores orientation on the wall
+- repeated hits increase buildup thickness outward from the cave surface
+- used non-uniform scale so deposition reads more like a sprayed layer
+
+Metrics added
+- `avg_layers_per_cell`
+- `max_layers_per_cell`
+- `deposit_cell_size_m`
+- `captured_particles_per_m2`
+- `sweep_patch_area_m2`
+
+Result
+- retained material began to read like sprayed buildup instead of loose bead piles
+
+Clean validation after this stage
+- run id: `20260405_143640`
+- emitted: `1500`
+- captured: `1500`
+- deposit cells: `771`
+- sweep patch area: `1.2825 m2`
+
+Poster seed
+- simple idea: "Marbles into coat"
+- symbol: scattered spheres flattening into overlapping wall-backed tiles
+
+-------------------------------------
+STEP 7. Add a wetter surface reading
+-------------------------------------
+
+Goal
+- make the freshly sprayed result look wetter and more concrete-like
+
+Problem
+- the flatter retained cells were better, but still too dry and graphic
+
+Solution
+- added preview materials for:
+  flying particles
+  buildup body
+  darker glossy wet top coat
+- added a second retained layer of larger thin surface-aligned wet splats
+
+Result
+- the sprayed result looked fresher and more recently applied
+
+Clean validation after this stage
+- run id: `20260405_145929`
+- emitted: `1500`
+- captured: `1500`
+- deposit cells: `736`
+- wet coat instances: `736`
+
+Poster seed
+- simple idea: "Dry patch becomes fresh coat"
+- symbol: matte gray layer gaining a dark glossy skin
+
+------------------------------------------
+STEP 8. Move the nozzle through space
+------------------------------------------
+
+Goal
+- make the source look more like a moving machine painting the wall
+
+Problem
+- only the wall target moved at first; the source itself still felt too static
+
+Solution
+- added preview-only nozzle motion in space
+- source now follows the sweep pattern
+- added bob and sway to keep the motion readable
+
+Key motion settings at that earlier stage
+- follow_u `0.55`
+- follow_v `0.42`
+- bob amplitude `0.10`
+- sway amplitude `0.06`
+
+Result
+- the wall looked painted by a moving spray source instead of by an invisible shifting target only
+
+Clean validation after this stage
+- run id: `20260405_150319`
+- emitted: `1500`
+- captured: `1500`
+- deposit cells: `762`
+
+Poster seed
+- simple idea: "Static emitter to moving painter"
+- symbol: nozzle leaving a broad painted swath across the cave wall
+
+-----------------------------------------------------
+STEP 9. First continuous retained-coat mesh attempt
+-----------------------------------------------------
+
+Goal
+- make the retained result read as a connected sprayed wall patch
+
+Problem
+- even with wet splats, the retained result still read as a collection of cells more than a continuous coat
+
+Solution
+- sampled the cave wall in a local field
+- rebuilt a smoothed retained shell on that surface
+- hid the old static splat cloud by default
+- used the same underlying deposit-cell data to drive the broader shell
+
+Result
+- the retained result started reading as one connected sprayed zone
+
+Clean validation after this stage
+- run id: `20260405_154053`
+- continuous coat vertices: `245`
+- continuous coat faces: `211`
+- continuous coat area: `1.001 m2`
+
+Poster seed
+- simple idea: "Dots to surface"
+- symbol: a cloud of islands merging into one smooth wall patch
+
+--------------------------------------------------------
+STEP 10. First major continuous-coat placement failure
+--------------------------------------------------------
+
+Goal
+- keep the continuous coat attached to the correct cave wall area
+
+Problem seen in viewport
+- flying particles worked
+- buildup appeared too slowly
+- a hard-edged gray shape appeared in the wrong place
+
+Root cause
+- the first continuous coat reconstruction was driven by a broad projection plane through the tunnel
+- on this cave shape, the coat could attach to a nearer unintended surface near the nozzle
+
+Fix
+- rebuilt the continuous coat from actual captured wall-hit cells and their normals
+- re-enabled wet retained splats during spray so material becomes visible sooner while the coat fills in
+
+Result
+- wrong-surface placement was fixed
+- buildup became visible earlier
+
+Clean validation after this fix
+- run id: `20260405_155617`
+- continuous coat vertices: `288`
+- continuous coat faces: `248`
+- continuous coat area: `0.708 m2`
+
+Poster seed
+- simple idea: "Wrong wall"
+- symbol: a projection plane grabbing the wrong surface, then being replaced by direct wall-hit anchors
+
+-----------------------------------------------------
+STEP 11. First large customer-facing area expansion
+-----------------------------------------------------
+
+Goal
+- move the sprayed wall patch closer to the scale seen in the customer mockup
+
+Problem
+- user feedback: still too small
+
+Solution
+- enlarged sweep width and height
+- increased raster passes
+- widened jitter
+- increased throughput
+- widened cone slightly
+- pushed nozzle follow factors higher
+- enlarged continuous-coat influence region
+
+Retuned values at this stage
+- width `2.20 m`
+- height `1.55 m`
+- passes `11`
+- jitter `0.085 m`
+- target particles per sec `380`
+- cone `3.4 deg`
+
+Result
+- much larger wall patch
+
+Clean validation after this stage
+- run id: `20260405_160950`
+- emitted: `1899`
+- captured: `1899`
+- deposit cells: `1040`
+- continuous coat area: `2.670 m2`
+
+Poster seed
+- simple idea: "Scale up the footprint"
+- symbol: a small stencil being stretched into a broad wall target zone
+
+------------------------------------------------------
+STEP 12. Second major wall-area expansion for footprint
+------------------------------------------------------
+
+Goal
+- push much closer to the customer-facing coated zone size
+
+Problem
+- still visually too small relative to the target impression
+
+Solution
+- expanded nearly every footprint-driving parameter again
+- longer spray duration
+- higher particle throughput
+- larger width and height
+- more passes
+- more jitter
+- stronger nozzle following
+- larger coat field support
+
+Retuned values
+- emit duration `6.0 s`
+- target particles per sec `520`
+- cone `3.8 deg`
+- width `3.20 m`
+- height `2.30 m`
+- passes `15`
+- jitter `0.110 m`
+
+Result
+- broad large-scale retained zone became possible
+
+Clean validation after this stage
+- run id: `20260405_185114`
+- emitted: `3119`
+- captured: `3119`
+- deposit cells: `1697`
+- continuous coat area: `8.206 m2`
+
+Poster seed
+- simple idea: "From patch to panel"
+- symbol: nozzle painting a much larger wall window
+
+------------------------------------------------------------
+STEP 13. Square-plane closeup artifact and first hard fix
+------------------------------------------------------------
+
+Goal
+- remove the visible hard-edged square plane near the retained wall result
+
+Problem seen by user
+- a square / planar sheet was still visible in close views
+
+Root cause
+- the smoothed preview field still allowed face creation in regions that had softened presence but insufficient raw local support from real wall-hit cells
+
+Fix
+- introduced a raw support threshold
+- unsupported vertices no longer contribute visible thickness
+- coat faces require all four corners to have local raw support
+
+Key settings added / strengthened
+- `CONTINUOUS_COAT_RAW_SUPPORT_MIN`
+- raw support gating at face generation
+
+Result
+- artifact reduced, but not fully gone in the user's closeup checks
+
+Clean validation after this stage
+- run id: `20260405_190316`
+- continuous coat area: `7.727 m2`
+
+Poster seed
+- simple idea: "Fake support creates fake sheet"
+- symbol: a floating square grid being cut back to only its anchored corners
+
+----------------------------------------------------------------
+STEP 14. Second anti-plane fix: stricter geometry quality controls
+----------------------------------------------------------------
+
+Goal
+- stop large stretched bridging faces from surviving
+
+Problem
+- even after support gating, the user could still see planar-looking remnants
+
+Solution
+- strengthened anti-bridging geometry rules
+- added face edge-length and face-area culling
+- still computed continuous coat statistics for tuning
+
+Key controls
+- `CONTINUOUS_COAT_MAX_EDGE_STRETCH = 2.50`
+- `CONTINUOUS_COAT_MAX_FACE_AREA_MULT = 4.50`
+
+Result
+- safer geometry, but still not enough for fully reliable close-camera presentation
+
+Poster seed
+- simple idea: "Trim the stretched fabric"
+- symbol: oversized square faces being clipped by scissors at the edges
+
+------------------------------------------------------------------
+STEP 15. Final close-up-safe viewport solution that user approved
+------------------------------------------------------------------
+
+Goal
+- guarantee that the unwanted square sheet is not visible in the working preview
+
+Problem
+- the user still saw the square plane after earlier coat-mesh cleanup
+
+Final strategic decision
+- stop trying to show the continuous coat mesh in the close-camera viewport preview
+- keep computing it internally for statistics and future tuning
+- show only the visible wet retained wall-backed splats in the viewport
+
+Additional cleanup
+- prune non-locator source geometry under:
+  `/CAVE_collision_proxy/PreviewSpraySource`
+
+Key final toggles
+- `SHOW_CONTINUOUS_COAT_MESH = False`
+- `SHOW_WET_COAT_SPLATS = True`
+- `HIDE_SOURCE_PROXY_GEOMETRY = True`
+
+Why this worked
+- the unwanted plane belonged to the continuous coat preview mesh path
+- by hiding that mesh in the viewport and keeping only wall-backed wet buildup visible, the artifact was eliminated from the user-facing result
+
+Clean validation baseline after this change
+- run id: `20260405_192555`
+- emitted: `3119`
+- captured: `3119`
+- deposit instances: `1692`
+- wet coat instances: `1692`
+- deposit cells: `1692`
+- finalize reason: `quiet_tail`
+
+Manual final approval state
+- latest viewport run id: `20260405_193331`
+- finalize reason: `timeline_stopped`
+- user reported the result as "perfect"
+
+Poster seed
+- simple idea: "Hide the diagnostic layer, keep the useful layer"
+- symbol: one transparent technical sheet turned off, while the true wall coat remains
+
+==================================================
+10. ISSUE / ROOT CAUSE / FIX / RESULT SUMMARY
+==================================================
+
+This section is the fastest technical digest.
+
+Issue 1
+- Problem: Branch B visual preview did not actually exist in usable form
+- Root cause: missing preview architecture, not just bad parameters
+- Fix: built a new direct-cave preview branch from scene locators and cave mesh
+- Result: particles could fly, hit, and retain on the real cave wall
+
+Issue 2
+- Problem: early retained material looked like beads / marbles
+- Root cause: one retained sphere per capture did not read as sprayed concrete
+- Fix: replaced with flatter surface-aligned buildup cells plus layer accumulation
+- Result: retained material looked more wall-conforming
+
+Issue 3
+- Problem: retained material looked too dry and graphic
+- Root cause: retained geometry had no fresh wet top layer
+- Fix: added darker glossy wet splat layer
+- Result: sprayed result read more like fresh concrete
+
+Issue 4
+- Problem: source felt too static
+- Root cause: only target sweep moved clearly
+- Fix: added nozzle-space motion with follow, bob, and sway
+- Result: wall looked painted by a moving source
+
+Issue 5
+- Problem: automated launch failed from batch file
+- Root cause: `--exec` path broke at spaces in the workspace path
+- Fix: changed into scripts folder and executed launcher by relative filename
+- Result: reliable preview and validation launch
+
+Issue 6
+- Problem: retained result still looked like disconnected patches
+- Root cause: visible coat was still dominated by instanced cells
+- Fix: built continuous coat reconstruction on the cave surface
+- Result: retained result could be treated as one broader sprayed patch
+
+Issue 7
+- Problem: continuous coat attached to wrong area
+- Root cause: broad-plane projection sampled unintended nearby surface
+- Fix: rebuild coat from actual captured hit cells and their normals
+- Result: retained coat aligned with the correct wall region
+
+Issue 8
+- Problem: coated area was too small for customer-facing impression
+- Root cause: sweep footprint and throughput were too conservative
+- Fix: enlarged sweep, duration, passes, jitter, cone, and nozzle following
+- Result: much broader wall patch
+
+Issue 9
+- Problem: hard-edged square plane visible in closeups
+- Root cause: continuous-coat preview mesh still generated unsupported or bridging planar faces
+- Fixes attempted:
+  raw support threshold
+  corner support requirement
+  edge-length cull
+  face-area cull
+- Final fix: hide continuous coat mesh in viewport and keep only wall-backed wet buildup visible
+- Result: close-up-safe preview that user approved
+
+==================================================
+11. POSTER / INFOGRAPHIC FRIENDLY STORY BLOCKS
+==================================================
+
+These are intentionally simplified "issue + solution" story seeds.
+
+Poster block 1
+- Title: "The preview branch was missing"
+- Plain-language problem: we had a cave and markers, but no working spray system
+- Plain-language solution: build a new direct preview path from the real cave and source locators
+- Visual metaphor: empty tunnel with a broken pipeline, then a new glowing spray path
+
+Poster block 2
+- Title: "Particles finally hit the real wall"
+- Plain-language problem: no visible wall impact result
+- Plain-language solution: trace particles against the actual cave mesh and retain the hits
+- Visual metaphor: golden particles turning into white marks on rock
+
+Poster block 3
+- Title: "From beads to sprayed buildup"
+- Plain-language problem: retained particles looked like marbles
+- Plain-language solution: flatten and align buildup to the cave wall
+- Visual metaphor: beads pressed into overlapping tiles on rock
+
+Poster block 4
+- Title: "Make fresh concrete look wet"
+- Plain-language problem: sprayed area looked too dry
+- Plain-language solution: add a darker glossy wet surface layer
+- Visual metaphor: matte patch becoming moist and reflective
+
+Poster block 5
+- Title: "The nozzle had to move"
+- Plain-language problem: the spray felt static
+- Plain-language solution: move the nozzle through space while painting the wall
+- Visual metaphor: robotic brushstroke across the cave wall
+
+Poster block 6
+- Title: "Wrong surface, wrong patch"
+- Plain-language problem: a fake patch appeared in the wrong place
+- Plain-language solution: rebuild the coat from true wall-hit points instead of a broad projection plane
+- Visual metaphor: spotlight moved from the wrong wall to the correct wall
+
+Poster block 7
+- Title: "Scale the target zone"
+- Plain-language problem: the sprayed area was too small for the customer vision
+- Plain-language solution: enlarge sweep width, height, passes, duration, and density
+- Visual metaphor: a small stencil expanding into a big work area
+
+Poster block 8
+- Title: "Kill the square artifact"
+- Plain-language problem: close-up views showed a fake square sheet
+- Plain-language solution: stop showing the risky diagnostic coat mesh and keep only the wall-backed visible buildup
+- Visual metaphor: a transparent technical overlay turned off, leaving only the real sprayed wall
+
+==================================================
+12. KNOWN LIMITATIONS RIGHT NOW
+==================================================
+
+What this preview is good at now
+- visible air-flight particles
+- impact on the real cave wall
+- retained wall-backed buildup
+- moving nozzle preview
+- broad sprayed wall region
+- close-up-safe viewport presentation
+
+What this preview is not yet
+- not a physically solved wet concrete material model
+- not true robot kinematics
+- not a rebound / ricochet solver
+- not an overspray loss model
+- not angle-dependent deposition physics
+- not a final production material shader pass
+
+Important limitation detail
+- the continuous coat is still computed internally as a useful preview/tuning field
+- but it is hidden in the viewport because closeup presentation quality matters more right now than showing that diagnostic layer
+
+==================================================
+13. BEST NEXT STEPS TOMORROW
+==================================================
+
+If the user wants to keep improving Branch B, the best next steps are:
+
+1. Increase the believable visible wall footprint further if the customer-facing camera still reads the patch as too small.
+2. Improve wet concrete surface character:
+   richer breakup
+   more believable edge softness
+   better fresh-shotcrete material response
+3. Refine nozzle motion into a more explicit robot-like painting path.
+4. After that, add richer spray behavior:
+   rebound
+   overspray loss
+   angle dependence
+
+Recommended immediate next step if no new direction is given:
+- continue in Branch B
+- keep the close-up-safe viewport mode
+- improve wet concrete look and/or enlarge the painted footprint further
+
+==================================================
+14. FAST OPERATING REMINDERS
+==================================================
+
+To watch the visual preview:
+- double-click `RUN_DIRECT_CAVE_PREVIEW_V1.bat`
+
+To run a clean headless check:
+- double-click `RUN_DIRECT_CAVE_PREVIEW_VALIDATE_V1.bat`
+
+If working inside an already-open Isaac Sim window:
+1. open `01_scenes/boolean Applied ver3_preview_particles.usdc`
+2. run `02_core_scripts/shotcrete_direct_cave_preview_launcher_v1.py`
+
+==================================================
+15. FINAL BOTTOM LINE
+==================================================
+
+Today started with an incomplete Branch B preview architecture.
+Today ended with a working user-approved direct-cave shotcrete preview.
+
+The major arc of the day was:
+- recover missing preview branch
+- make particles fly and stick
+- improve retained buildup look
+- add wetter surface read
+- add moving nozzle motion
+- attempt continuous coat surface
+- fix wrong-wall placement
+- enlarge the coated area substantially
+- eliminate the close-up square-plane artifact by switching to close-up-safe viewport mode
+
+If restarting tomorrow, continue from this sentence:
+
+"Branch B direct-cave preview is working. Keep `SHOW_CONTINUOUS_COAT_MESH = False`, preserve Branch A, and continue from the close-up-safe sprayed wall baseline."

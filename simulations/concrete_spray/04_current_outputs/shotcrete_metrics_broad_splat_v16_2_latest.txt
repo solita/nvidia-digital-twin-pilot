@@ -1,0 +1,47 @@
+Shotcrete metrics summary (v16_2)
+Run ID: 20260331_142550
+Config hash: c8fac23f8779fa5d
+Stage file: D:\Solita\Cave Sim\uploads_files_4899804_CAVE+USD\CAVE_clean_master.usdc
+Finalize reason: quiet_tail
+Finalize semantics: Emitter finished and live particle count stayed below threshold across quiet probes.
+Time_s: 11.517
+Run CSV: D:/Solita/Cave Sim/Scripts\shotcrete_metrics_broad_splat_v16_2_run_20260331_142550.csv
+Latest CSV alias (written only after finalize): D:/Solita/Cave Sim/Scripts\shotcrete_metrics_broad_splat_v16_2_latest.csv
+Run TXT: D:/Solita/Cave Sim/Scripts\shotcrete_metrics_broad_splat_v16_2_run_20260331_142550.txt
+Latest TXT alias (written only after finalize): D:/Solita/Cave Sim/Scripts\shotcrete_metrics_broad_splat_v16_2_latest.txt
+Run JSON: D:/Solita/Cave Sim/Scripts\shotcrete_metrics_broad_splat_v16_2_run_20260331_142550.json
+Latest JSON alias (written only after finalize): D:/Solita/Cave Sim/Scripts\shotcrete_metrics_broad_splat_v16_2_latest.json
+
+Emitted particles: 3600
+Dynamic live (final): 0
+Dynamic live (max): 283
+Corridor entries: 3415
+Captured parent particles: 2123
+Deposited splats: 19107
+Capture via corridor: 539
+Capture via predicted: 459
+Capture via crossing: 0
+Capture via side funnel: 1125
+Missed side: 1438
+Missed below: 11
+Missed behind: 0
+Culled far: 28
+Accounted total (captured + misses): 3600
+Conservation delta (emitted - accounted): 0
+
+Occupied cells: 525
+Coverage area m2: 0.091476
+Coverage pct: 4.546
+Capture efficiency: 0.590
+Avg stack: 4.044
+Max stack: 69
+Avg thickness mm: 22.934
+Max thickness mm: 265.870
+
+Dominant loss channel: missed_side (1438)
+Interpretation: Dominant remaining loss is lateral overspray / side interception.
+Aim side local bias m: 0.0000
+Aim vertical local bias m: 0.0000
+Latest alias updated: False
+
+Recommended next step: validate that this full-run CSV matches the visual branch before proxy-to-cave mapping.
