@@ -24,15 +24,14 @@ import re
 import runpy
 import sys
 import traceback
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
 
 import carb
 import omni.kit.app
 import omni.timeline
 import omni.usd
-
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 EXPORT_SCENE = SCRIPTS_DIR.parent / "01_scenes" / "CAVE_clean_master.usdc"
@@ -74,15 +73,15 @@ REJECTED_RE = re.compile(r"\brejected(?:\s+cells)?\s*[:=]\s*([0-9]+)", re.IGNORE
 @dataclass
 class Verification:
     gate_path: Path
-    before_mtime_ns: Optional[int]
-    after_mtime_ns: Optional[int]
-    run_id: Optional[str] = None
-    source_run_id: Optional[str] = None
-    coverage_ratio: Optional[str] = None
-    volume_ratio: Optional[str] = None
-    accepted: Optional[str] = None
-    source_cells: Optional[str] = None
-    rejected: Optional[str] = None
+    before_mtime_ns: int | None
+    after_mtime_ns: int | None
+    run_id: str | None = None
+    source_run_id: str | None = None
+    coverage_ratio: str | None = None
+    volume_ratio: str | None = None
+    accepted: str | None = None
+    source_cells: str | None = None
+    rejected: str | None = None
 
 
 def log(message: str) -> None:
@@ -101,7 +100,7 @@ def _to_stage_url(path: Path) -> str:
     return str(path).replace("\\", "/")
 
 
-def _mtime_ns(path: Path) -> Optional[int]:
+def _mtime_ns(path: Path) -> int | None:
     try:
         return path.stat().st_mtime_ns
     except FileNotFoundError:
@@ -117,12 +116,12 @@ def _read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8-sig", errors="replace")
 
 
-def _extract_first(regex: re.Pattern[str], text: str) -> Optional[str]:
+def _extract_first(regex: re.Pattern[str], text: str) -> str | None:
     match = regex.search(text)
     return match.group(1) if match else None
 
 
-def _extract_run_id(text: str) -> Optional[str]:
+def _extract_run_id(text: str) -> str | None:
     match = RUN_ID_RE.search(text)
     if match:
         return match.group(1)
@@ -130,7 +129,7 @@ def _extract_run_id(text: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def _collect_verification(gate_path: Path, before_mtime_ns: Optional[int], parse_paths: Iterable[Path]) -> Verification:
+def _collect_verification(gate_path: Path, before_mtime_ns: int | None, parse_paths: Iterable[Path]) -> Verification:
     verification = Verification(
         gate_path=gate_path,
         before_mtime_ns=before_mtime_ns,
@@ -264,7 +263,7 @@ def _run_script_file(script_path: Path, label: str) -> None:
         os.chdir(str(cwd_before))
 
 
-async def _wait_for_file_update(gate_path: Path, before_mtime_ns: Optional[int], timeout_s: float, label: str) -> None:
+async def _wait_for_file_update(gate_path: Path, before_mtime_ns: int | None, timeout_s: float, label: str) -> None:
     app = omni.kit.app.get_app()
     deadline = app.get_time_since_start_s() + timeout_s
 

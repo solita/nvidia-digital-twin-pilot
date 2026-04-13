@@ -1,7 +1,7 @@
 import datetime
+import glob
 import json
 import math
-import glob
 import os
 import shutil
 
@@ -179,7 +179,7 @@ def load_exact_field_payload(stage):
     ]
     for path in candidates:
         if path and os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 payload = json.load(f)
             payload["_loaded_from"] = path
             return payload
@@ -201,7 +201,7 @@ def load_exact_field_payload(stage):
 
     if run_candidates:
         path = run_candidates[0]
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             payload = json.load(f)
         payload["_loaded_from"] = path
         payload["_autodetected_run_file"] = True

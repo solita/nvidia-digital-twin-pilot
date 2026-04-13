@@ -1,0 +1,42 @@
+[project]
+name = "nvidia-digital-twin-pilot"
+requires-python = ">=3.10"
+
+# ── Ruff — linter + formatter ─────────────────────────────────────────────────
+# Run:  ruff check .          (lint)
+#       ruff check . --fix    (auto-fix safe issues)
+#       ruff format .         (format)
+# Install: pip install ruff  OR  brew install ruff
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes (unused imports, undefined names, etc.)
+    "I",   # isort (import ordering)
+    "UP",  # pyupgrade (modernise syntax for Python 3.10+)
+]
+ignore = [
+    # Isaac Sim scripts frequently do imports after conditional runtime checks.
+    "E402",
+    # Long lines in USD path strings and docker run commands are unavoidable.
+    "E501",
+]
+
+[tool.ruff.lint.isort]
+# Tell isort that these Isaac Sim / Omniverse packages are third-party
+# so it groups them correctly even though they are not locally installed.
+known-third-party = ["omni", "pxr", "carb", "warp", "isaacsim"]
+
+[tool.ruff.lint.per-file-ignores]
+# Simulation launcher scripts often do asyncio.ensure_future at module level —
+# suppress the "found statement after return" style warnings there.
+"**/02_core_scripts/*.py" = ["E731"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

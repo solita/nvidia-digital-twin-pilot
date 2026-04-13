@@ -8,7 +8,6 @@ import random
 import omni
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 
-
 NOZZLE_LOCATOR_PATH = "/CAVE_collision_proxy/PreviewSpraySource/NozzleLocator"
 AIM_LOCATOR_PATH = "/CAVE_collision_proxy/PreviewSpraySource/AimLocator"
 PREVIEW_SOURCE_ROOT_PATH = "/CAVE_collision_proxy/PreviewSpraySource"
