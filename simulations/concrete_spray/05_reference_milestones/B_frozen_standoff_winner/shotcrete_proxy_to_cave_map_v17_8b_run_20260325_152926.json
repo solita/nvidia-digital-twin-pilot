@@ -1,0 +1,61 @@
+{
+  "areas": {
+    "coverage_ratio": 0.999999999999996,
+    "mapped_area_m2": 0.0472190399999998,
+    "source_area_m2": 0.04721903999999999
+  },
+  "counts": {
+    "accept_fraction": 1.0,
+    "accepted_cells": 271,
+    "reject_distance": 0,
+    "reject_no_candidate": 0,
+    "reject_occlusion": 0,
+    "reject_receive": 0,
+    "rejected_cells": 0,
+    "source_cells": 271
+  },
+  "distance_stats": {
+    "avg": 0.11733165052694078,
+    "count": 271,
+    "max": 0.2795629001806669,
+    "min": 0.0001884399878343126,
+    "p05": 0.020867556062822156,
+    "p50": 0.11415469217637321,
+    "p95": 0.19087776746710605
+  },
+  "mapping_method": "exact_proxy_field_import_receive_only",
+  "receive_dot_stats": {
+    "avg": 0.6206212271479755,
+    "count": 271,
+    "max": 0.784806246285717,
+    "min": 0.35490069674352753,
+    "p05": 0.3819708807074558,
+    "p50": 0.6922933575453225,
+    "p95": 0.7551589343369265
+  },
+  "run_id": "20260325_152926",
+  "run_version_tag": "v17_8b",
+  "source_config_hash": "71bf8d553d6ad801",
+  "source_field_loaded_from": "D:/Solita/Cave Sim/Scripts\\shotcrete_proxy_field_v16_2_run_20260325_152756.json",
+  "source_field_summary": {
+    "baseline_summary": {
+      "capture_efficiency": 0.17777777777777778,
+      "coverage_area_m2": 0.04721903999999999,
+      "occupied_cells": 271,
+      "volume_proxy_m3": 0.0004170608640000022
+    },
+    "cell_count": 271,
+    "coverage_area_m2": 0.04721903999999999,
+    "volume_proxy_m3": 0.00041706086400000134
+  },
+  "source_finalize_reason": "timeline_stopped",
+  "source_run_id": "20260325_152756",
+  "target_mesh_path": "/CAVE_collision_proxy/CAVE_LOWPOLY/cave_collision/Cube_001",
+  "target_stage_path": "D:\\Solita\\Cave Sim\\uploads_files_4899804_CAVE+USD\\boolean Applied ver3_calibration.usdc",
+  "triangle_count": 10049,
+  "volumes": {
+    "mapped_volume_proxy_m3": 0.00041706086400000134,
+    "source_volume_proxy_m3": 0.00041706086400000134,
+    "volume_ratio": 1.0
+  }
+}

@@ -1,0 +1,189 @@
+{
+  "areas": {
+    "coverage_ratio": 1.0000000000000064,
+    "mapped_area_m2": 0.08555184000000053,
+    "source_area_m2": 0.08555183999999998
+  },
+  "counts": {
+    "accept_fraction": 1.0,
+    "accepted_cells": 491,
+    "fallback_receive_cells": 4,
+    "reject_distance": 0,
+    "reject_no_candidate": 0,
+    "reject_occlusion": 0,
+    "reject_receive": 0,
+    "rejected_cells": 0,
+    "source_cells": 491
+  },
+  "distance_stats": {
+    "avg": 0.11754944894529525,
+    "count": 499,
+    "max": 0.29167909025375166,
+    "min": 0.0001884399878343126,
+    "p05": 0.0176256197005673,
+    "p50": 0.1188754343480041,
+    "p95": 0.2030694571531013
+  },
+  "mapping_method": "exact_proxy_field_import_receive_only_with_diagnostics",
+  "receive_dot_stats": {
+    "avg": 0.4976280180782765,
+    "count": 499,
+    "max": 0.7403806958388539,
+    "min": -0.8136776292654244,
+    "p05": 0.3127290217164256,
+    "p50": 0.6196358884451829,
+    "p95": 0.7133395360339048
+  },
+  "reject_receive_details": [
+    {
+      "cell": [
+        -11,
+        4
+      ],
+      "distance_m": 0.25923642342317316,
+      "reason": "reject_receive",
+      "receive_dot": -0.8044926659747227,
+      "receive_threshold_used": 0.15,
+      "src_world": [
+        15.193758964538574,
+        17.381624221801758,
+        2.4004971981048584
+      ],
+      "status": "rejected",
+      "target_normal": [
+        0.958881676197052,
+        0.21136219799518585,
+        0.18939906358718872
+      ],
+      "target_world": [
+        15.442336082458496,
+        17.436416625976562,
+        2.449596405029297
+      ],
+      "triangle_index": 2577,
+      "used_fallback": false
+    },
+    {
+      "cell": [
+        -2,
+        -4
+      ],
+      "distance_m": 0.29167909025375166,
+      "reason": "reject_receive",
+      "receive_dot": -0.7872091442095841,
+      "receive_threshold_used": 0.15,
+      "src_world": [
+        15.193758964538574,
+        17.831947326660156,
+        2.0718791484832764
+      ],
+      "status": "rejected",
+      "target_normal": [
+        0.9054543972015381,
+        0.12600718438625336,
+        0.40530797839164734
+      ],
+      "target_world": [
+        15.457860946655273,
+        17.868701934814453,
+        2.190099000930786
+      ],
+      "triangle_index": 6832,
+      "used_fallback": false
+    },
+    {
+      "cell": [
+        9,
+        -3
+      ],
+      "distance_m": 0.2257806380207624,
+      "reason": "reject_receive",
+      "receive_dot": -0.8136776292654244,
+      "receive_threshold_used": 0.15,
+      "src_world": [
+        15.193758964538574,
+        18.382339477539062,
+        2.1129565238952637
+      ],
+      "status": "rejected",
+      "target_normal": [
+        0.9113693833351135,
+        0.06796219944953918,
+        0.40593963861465454
+      ],
+      "target_world": [
+        15.399528503417969,
+        18.39768409729004,
+        2.2046098709106445
+      ],
+      "triangle_index": 2936,
+      "used_fallback": false
+    },
+    {
+      "cell": [
+        19,
+        -6
+      ],
+      "distance_m": 0.2418002375557101,
+      "reason": "reject_receive",
+      "receive_dot": -0.7229106306658419,
+      "receive_threshold_used": 0.15,
+      "src_world": [
+        15.193758964538574,
+        18.88269805908203,
+        1.9897246360778809
+      ],
+      "status": "rejected",
+      "target_normal": [
+        0.9113693833351135,
+        0.06796219944953918,
+        0.40593963861465454
+      ],
+      "target_world": [
+        15.414128303527832,
+        18.899131774902344,
+        2.087880849838257
+      ],
+      "triangle_index": 2936,
+      "used_fallback": false
+    }
+  ],
+  "run_id": "20260330_172052",
+  "run_version_tag": "v17_8c",
+  "settings": {
+    "demo_visual_mode": true,
+    "enable_demo_fallback_for_reject_receive": true,
+    "enable_occlusion_check": true,
+    "fallback_sphere_radius": 0.09,
+    "fallback_visual_offset_m": 0.022,
+    "mapped_sphere_radius": 0.06,
+    "mapped_visual_offset_m": 0.018,
+    "max_transfer_distance_m": 0.45,
+    "min_receive_hemisphere_dot": 0.15,
+    "second_pass_relaxed_receive_dot": null,
+    "show_rejected_debug": false
+  },
+  "source_config_hash": "415bfcf7b223339d",
+  "source_field_loaded_from": "D:/Solita/Cave Sim/Scripts\\shotcrete_proxy_field_v16_2_latest.json",
+  "source_field_summary": {
+    "baseline_summary": {
+      "capture_efficiency": 0.36444444444444446,
+      "coverage_area_m2": 0.08555183999999998,
+      "occupied_cells": 491,
+      "volume_proxy_m3": 0.0008549747712000052
+    },
+    "cell_count": 491,
+    "coverage_area_m2": 0.08555183999999998,
+    "volume_proxy_m3": 0.0008549747712000039
+  },
+  "source_finalize_reason": "quiet_tail",
+  "source_run_id": "20260330_171937",
+  "target_mesh_path": "/CAVE_collision_proxy/CAVE_LOWPOLY/cave_collision/Cube_001",
+  "target_stage_path": "D:\\Solita\\Cave Sim\\uploads_files_4899804_CAVE+USD\\boolean Applied ver3_calibration.usdc",
+  "triangle_count": 10049,
+  "volumes": {
+    "mapped_volume_proxy_m3": 0.0008549747712000039,
+    "source_volume_proxy_m3": 0.0008549747712000039,
+    "volume_ratio": 1.0
+  }
+}

@@ -1,0 +1,36 @@
+Shotcrete proxy->cave exact-field import mapping (v17_8c)
+Source field JSON: D:/Solita/Cave Sim/Scripts\shotcrete_proxy_field_v16_2_latest.json
+Source run id: 20260330_171937
+Target mesh path: /CAVE_collision_proxy/CAVE_LOWPOLY/cave_collision/Cube_001
+Triangle count: 10049
+Source cells: 491
+Accepted cells: 491
+Rejected cells: 0
+Fallback receive cells used: 4
+Accept fraction: 1.0000
+Reject distance: 0
+Reject receive: 0
+Reject occlusion: 0
+Reject no candidate: 0
+Source area m2: 0.085552
+Mapped area m2: 0.085552
+Coverage ratio: 1.0000
+Source volume proxy m3: 0.000855
+Mapped volume proxy m3: 0.000855
+Volume ratio: 1.0000
+receive_dot avg/p05/p50/p95: 0.4976 / 0.3127 / 0.6196 / 0.7133
+distance avg/p05/p50/p95: 0.1175 / 0.0176 / 0.1189 / 0.2031
+
+Visualization settings:
+  DEMO_VISUAL_MODE = True
+  MAPPED_VISUAL_OFFSET_M = 0.018
+  FALLBACK_VISUAL_OFFSET_M = 0.022
+  MAPPED_SPHERE_RADIUS = 0.06
+  FALLBACK_SPHERE_RADIUS = 0.09
+  SHOW_REJECTED_DEBUG = False
+
+Reject_receive details:
+  cell=[-11, 4] distance_m=0.259236 receive_dot=-0.804493 threshold=0.150000 triangle_index=2577 src=[15.193758964538574, 17.381624221801758, 2.4004971981048584] target=[15.442336082458496, 17.436416625976562, 2.449596405029297] normal=[0.958881676197052, 0.21136219799518585, 0.18939906358718872]
+  cell=[-2, -4] distance_m=0.291679 receive_dot=-0.787209 threshold=0.150000 triangle_index=6832 src=[15.193758964538574, 17.831947326660156, 2.0718791484832764] target=[15.457860946655273, 17.868701934814453, 2.190099000930786] normal=[0.9054543972015381, 0.12600718438625336, 0.40530797839164734]
+  cell=[9, -3] distance_m=0.225781 receive_dot=-0.813678 threshold=0.150000 triangle_index=2936 src=[15.193758964538574, 18.382339477539062, 2.1129565238952637] target=[15.399528503417969, 18.39768409729004, 2.2046098709106445] normal=[0.9113693833351135, 0.06796219944953918, 0.40593963861465454]
+  cell=[19, -6] distance_m=0.241800 receive_dot=-0.722911 threshold=0.150000 triangle_index=2936 src=[15.193758964538574, 18.88269805908203, 1.9897246360778809] target=[15.414128303527832, 18.899131774902344, 2.087880849838257] normal=[0.9113693833351135, 0.06796219944953918, 0.40593963861465454]
