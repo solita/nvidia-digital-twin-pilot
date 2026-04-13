@@ -1,6 +1,5 @@
-import omni.usd
 import omni.kit.commands
-from pxr import UsdGeom, Sdf
+import omni.usd
 
 PASS = "[PASS]"
 FAIL = "[FAIL]"
@@ -24,7 +23,7 @@ selection = ctx.get_selection().get_selected_prim_paths()
 if selection:
     print(f"{PASS} Selected prims : {selection}")
 else:
-    print(f"[INFO] No prims selected (not a failure)")
+    print("[INFO] No prims selected (not a failure)")
 
 # ── 3. Write test – create temp prim if absent ────────────────────────────────
 if stage.GetPrimAtPath(TEST_PRIM_PATH).IsValid():

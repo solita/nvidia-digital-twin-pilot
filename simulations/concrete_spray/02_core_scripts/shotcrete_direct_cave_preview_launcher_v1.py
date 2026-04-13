@@ -12,7 +12,6 @@ import omni.kit.app
 import omni.timeline
 import omni.usd
 
-
 _THIS_FILE = Path(__file__).resolve()
 SCRIPT_DIR = (
     _THIS_FILE.parent
