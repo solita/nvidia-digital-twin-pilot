@@ -1,0 +1,31 @@
+{
+    // Multi-root workspace for development on a Brev instance.
+    //
+    // Opens both the cloned repo and the live Isaac Sim data directory in a
+    // single Remote-SSH window, so you can copy scripts from the repo directly
+    // into the Isaac Sim working directory without switching windows.
+    //
+    // Setup (one time per Brev instance):
+    //   1. SSH config must be set up per docs/01_brev_setup.md (Option B)
+    //   2. Clone the repo on the Brev instance:
+    //        git clone <repo-url> ~/nvidia-digital-twin-pilot
+    //   3. Cmd+Shift+P → Remote-SSH: Connect to Host → <instance-name>
+    //      Then: File → Open Workspace from File
+    //            → ~/nvidia-digital-twin-pilot/brev.code-workspace
+    "folders": [
+        {
+            "name": "nvidia-digital-twin-pilot (repo)",
+            "path": "."
+        },
+        {
+            "name": "Isaac Sim Data",
+            "path": "/home/ubuntu/docker/isaac-sim/data"
+        }
+    ],
+    "settings": {
+        // Hide generated output files from the Explorer (they are gitignored anyway)
+        "files.exclude": {
+            "**/simulations/*/04_current_outputs/**": true
+        }
+    }
+}

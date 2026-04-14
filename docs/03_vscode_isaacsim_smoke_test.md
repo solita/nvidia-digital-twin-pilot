@@ -29,24 +29,22 @@ By default the extension tries to connect to `127.0.0.1:8226`. On a remote setup
 
 Fix: point the extension at the Brev machine's public IP.
 
-Open the VS Code settings file on the **remote**:
+Run this in the **remote** VS Code terminal (or any SSH session into the Brev instance). It fetches the public IP automatically and writes the settings file:
 
-```
-~/.vscode-server/data/User/settings.json
-```
-
-Add or merge the following:
-
-```json
+```bash
+PUBLIC_IP=$(curl -s ifconfig.me) && \
+mkdir -p ~/.vscode-server/data/User && \
+cat > ~/.vscode-server/data/User/settings.json << EOF
 {
     "isaacsim-vscode-edition.remoteApplication": {
-        "extensionIP": "<BREV_PUBLIC_IP>",
+        "extensionIP": "$PUBLIC_IP",
         "extensionPort": 8226
     }
 }
+EOF
 ```
 
-Replace `<BREV_PUBLIC_IP>` with the actual IP (e.g. `13.61.10.88`).
+If `~/.vscode-server/data/User/settings.json` already contains other settings, do not overwrite it — merge manually instead (`cat` with `>` will replace the entire file).
 
 After saving, reload VS Code: `Ctrl+Shift+P` → **Developer: Reload Window**.
 
@@ -59,7 +57,7 @@ Port `8226` is not open until you explicitly enable the extension inside the run
 In the Isaac Sim WebRTC Client:
 1. Go to **Window** → **Extensions**.
 2. Search for **VS Code**.
-3. Enable **omni.isaac.vscode**.
+3. Enable **VS CODE INTEGRATION**.
 
 This starts a TCP server inside Isaac Sim that listens on port `8226`. VS Code will send Python scripts over this socket and receive their output.
 
