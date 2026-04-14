@@ -1,4 +1,4 @@
-# Guide 04 — Developer Workflow
+# Guide 05 — Developer Workflow
 
 This guide covers how 2–3 developers collaborate on this repo: branching strategy, starting a new simulation from the template, deploying to Brev for testing, and committing changes back.
 
@@ -87,31 +87,31 @@ Committing the empty scaffold first means the folder structure is in version his
 
 ## Deploying to Brev for Testing
 
-Once you have scene files and scripts ready locally, deploy them to the Brev machine.
+Because the repo is already cloned on the Brev instance (required for the multi-root workspace in Guide 02), deploying is just a `git pull` plus a file copy — no upload from your local machine needed.
 
-### Option A — rsync (recommended for iterative development)
+### Option A — Pull and copy on Brev (recommended)
 
-`rsync` only transfers changed files, making it fast for script edits:
+In the VS Code integrated terminal (connected to Brev), or any SSH session:
 
 ```bash
-rsync -avz --progress \
+# Get the latest changes from your feature branch
+cd ~/nvidia-digital-twin-pilot
+git pull origin feature/<your-branch>
+
+# Copy the simulation into the Isaac Sim data volume
+cp -r simulations/<your_sim_name>/ \
+      /home/ubuntu/docker/isaac-sim/data/<your_sim_name>/
+```
+
+### Option B — rsync from local (when Brev instance is fresh / repo not yet cloned)
+
+```bash
+rsync -avz --progress --exclude '__pycache__' \
   simulations/<your_sim_name>/ \
   ubuntu@<BREV_PUBLIC_IP>:/home/ubuntu/docker/isaac-sim/data/<your_sim_name>/
 ```
 
-Run this from your local machine. Add `--exclude '__pycache__'` to skip Python cache files.
-
-### Option B — Full copy (first-time or full reset)
-
-From inside the Brev machine (after `brev shell` or `ssh isaac-sim-pilot`):
-
-```bash
-# If the repo is cloned on Brev — just pull and copy
-git pull origin feature/your-branch
-
-cp -r ~/path/to/simulations/<your_sim_name> \
-      /home/ubuntu/docker/isaac-sim/data/
-```
+Run this from your **local** machine. After this, clone the repo on Brev (Guide 02, Step 1) to switch to Option A going forward.
 
 ### Fix permissions after deploying
 
@@ -130,20 +130,18 @@ Because VS Code is connected to the Brev file system (see [Guide 02](./02_vscode
 
 **Workflow for fast iteration:**
 
-1. Edit a script in VS Code (connected to Brev remote)
+1. Edit a script in VS Code (in the `Isaac Sim Data` tree or the repo tree)
 2. Press `Ctrl+Shift+P` → **Isaac Sim: Run Remotely**
 3. Check output in `Ctrl+Shift+U` → "Isaac Sim"
 4. Iterate
-5. When happy, copy the file back to your local repo and commit:
+5. When happy, commit and push directly from the Brev VS Code window — the repo is already cloned there:
 
 ```bash
-# From local machine
-rsync -avz \
-  ubuntu@<BREV_PUBLIC_IP>:/home/ubuntu/docker/isaac-sim/data/<your_sim_name>/02_core_scripts/ \
-  simulations/<your_sim_name>/02_core_scripts/
-
+# In the VS Code terminal on Brev
+cd ~/nvidia-digital-twin-pilot
 git add simulations/<your_sim_name>/02_core_scripts/
 git commit -m "feat: update launcher with tested changes"
+git push origin feature/<your-branch>
 ```
 
 ---
@@ -175,4 +173,5 @@ Before opening a PR to `main`:
 
 ---
 
+**Previous:** [Guide 04 — Concrete Spray Simulation](./04_concrete_spray.md)  
 **Back to:** [Repository README](../README.md)

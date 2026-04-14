@@ -69,10 +69,10 @@ This starts a TCP server inside Isaac Sim that listens on port `8226`. VS Code w
 
 > **Before running:** Make sure a USD scene is open in the Isaac Sim WebRTC client. The smoke test needs an active stage — if no scene is loaded it will print `[FAIL] No stage found` and exit. Open any `.usd` file in Isaac Sim first.
 
-The smoke test is in `smoke_test/vscode_smoke_test.py`. Copy it to your working directory on the Brev machine (inside the volume-mounted data path), or open it directly in VS Code.
+The smoke test is in `smoke_test/vscode_smoke_test.py` in the repo. If you have the multi-root workspace open (see [Guide 02](./02_vscode_access.md)), it is already visible under the `nvidia-digital-twin-pilot (repo)` tree — no copying needed.
 
 **To run:**
-1. Open `vscode_smoke_test.py` in the remote VS Code editor.
+1. Open `smoke_test/vscode_smoke_test.py` from the repo tree in the remote VS Code editor.
 2. Press `Ctrl+Shift+P` → **Isaac Sim: Run Remotely**.  
    Alternatively, use the play button in the editor title bar and select **Run Remotely**.
 
@@ -124,4 +124,4 @@ The VS Code extension sends the contents of the current Python file over a **TCP
 
 ---
 
-**Next:** [Concrete Spray Simulation — Running on Brev](../simulations/concrete_spray/README.md)
+**Next:** [Guide 04 — Running the Concrete Spray Simulation](./04_concrete_spray.md)
