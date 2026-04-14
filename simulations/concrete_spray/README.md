@@ -44,18 +44,20 @@ concrete_spray/
 
 ## Deploying to the Brev Machine
 
-Copy the `concrete_spray/` directory into the Isaac Sim volume-mounted data path on the Brev instance:
+With the repo cloned on the Brev instance (see [Guide 02](../../docs/02_vscode_access.md)), copy the simulation into the Isaac Sim data volume directly on the Brev host:
 
 ```bash
-# Run on the Brev machine
-cp -r /path/to/concrete_spray /home/ubuntu/docker/isaac-sim/data/
+cp -r ~/nvidia-digital-twin-pilot/simulations/concrete_spray \
+      /home/ubuntu/docker/isaac-sim/data/
 
-# Fix ownership so Isaac Sim (UID 1234) can read/write
+# Fix ownership so Isaac Sim (UID 1234) can write outputs
 sudo chown -R 1234:1234 /home/ubuntu/docker/isaac-sim/data/concrete_spray
 
 # Fix permissions so VS Code (ubuntu user) also has access
 sudo chmod -R o+rwx /home/ubuntu/docker/isaac-sim/data/concrete_spray
 ```
+
+> For the full step-by-step walkthrough see [Guide 04 — Running the Concrete Spray Simulation](../../docs/04_concrete_spray.md).
 
 Inside the container, the simulation will be accessible at:
 

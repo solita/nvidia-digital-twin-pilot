@@ -13,7 +13,8 @@ A proof-of-concept repository for running NVIDIA Isaac Sim simulations on a clou
 | 01 | [Hosting Isaac Sim on Brev (AWS / Sweden)](docs/01_brev_setup.md) | Provision an L40S GPU on Brev, pull the Isaac Sim Docker container, and launch in headless WebRTC mode |
 | 02 | [VS Code Workspace with Read/Write Access](docs/02_vscode_access.md) | Connect VS Code via SSH and fix UID 1234 permission issues |
 | 03 | [VS Code ↔ Isaac Sim Connection + Smoke Test](docs/03_vscode_isaacsim_smoke_test.md) | Install the Isaac Sim VS Code extension, configure it for remote execution, and verify with the smoke test |
-| 04 | [Developer Workflow](docs/04_developer_workflow.md) | Branching strategy, starting a new simulation, deploying to Brev, iterating on scripts |
+| 04 | [Concrete Spray Simulation](docs/04_concrete_spray.md) | Deploy and run the example shotcrete simulation end-to-end on Brev |
+| 05 | [Developer Workflow](docs/05_developer_workflow.md) | Branching strategy, starting a new simulation, deploying to Brev, iterating on scripts |
 
 ---
 
@@ -23,7 +24,7 @@ A proof-of-concept repository for running NVIDIA Isaac Sim simulations on a clou
 |---|---|
 | [Concrete Spray (Shotcrete)](simulations/concrete_spray/README.md) | Real-time digital twin of a shotcrete operation in a mining cave — USD particle simulation driven by a microburst proxy data pipeline |
 
-> To add a new simulation, copy `simulations/_template/` and follow [Guide 04](docs/04_developer_workflow.md).
+> To add a new simulation, copy `simulations/_template/` and follow [Guide 05](docs/05_developer_workflow.md).
 
 ---
 
@@ -35,7 +36,8 @@ nvidia-digital-twin-pilot/
 │   ├── 01_brev_setup.md
 │   ├── 02_vscode_access.md
 │   ├── 03_vscode_isaacsim_smoke_test.md
-│   └── 04_developer_workflow.md
+│   ├── 04_concrete_spray.md
+│   └── 05_developer_workflow.md
 ├── smoke_test/
 │   └── vscode_smoke_test.py
 ├── simulations/
@@ -70,4 +72,5 @@ nvidia-digital-twin-pilot/
 2. Follow [Guide 02](docs/02_vscode_access.md) to connect VS Code with full file-system access.
 3. Follow [Guide 03](docs/03_vscode_isaacsim_smoke_test.md) to verify the VS Code ↔ Isaac Sim link.
 4. Deploy and run the [Concrete Spray simulation](simulations/concrete_spray/README.md) as a first real test.
-5. Read [Guide 04](docs/04_developer_workflow.md) before starting new development work.
+5. Run the [Concrete Spray simulation](docs/04_concrete_spray.md) as a first real test.
+6. Read [Guide 05](docs/05_developer_workflow.md) before starting new development work.
