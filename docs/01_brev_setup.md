@@ -89,52 +89,101 @@ If you also plan to use the VS Code remote extension (see [Guide 02](./02_vscode
 
 ---
 
-## Step 3 — Open a Remote Terminal via Brev CLI
+## Step 3 — Open a Remote Terminal
 
-Once the instance status is **Running**, sync it to your local CLI and SSH in:
+Once the instance status is **Running**, get the instance name and IP:
 
 ```bash
-# Pull the latest instance list (needed after creating via the web console)
+# Sync the latest instance list from the web console
 brev refresh
 
-# List your instances to confirm the name
+# List instances — note the name and IP
 brev ls
-
-# SSH into the instance by name
-brev shell isaac-sim-pilot
 ```
 
-Replace `isaac-sim-pilot` with the name you gave the instance in Step 1.
-
-> The CLI resolves the IP automatically — no need to copy it from the dashboard. If the instance was just created, `brev refresh` must be run first to sync it.
-
-### AWS SSH workaround
-
-AWS can block direct SSH connections attempted by the Brev CLI. If `brev shell` hangs or is refused, add a manual SSH config entry on your **local machine** that targets the instance IP directly:
+### Option A — Brev CLI (non-AWS providers only)
 
 ```bash
-cat >> ~/.ssh/config << 'EOF'
+brev shell <instance-name>
+```
 
-Host isaac-sim-pilot
+> On **AWS**, all Brev CLI commands that route via the Brev backend (`brev shell`, `brev open ... code`) reliably hang or return `not_found`. Use Option B instead.
+
+---
+
+### Option B — Direct SSH (required for AWS, works everywhere)
+
+This is the recommended path for AWS-hosted instances. It bypasses the Brev API entirely and connects directly over port 22.
+
+#### 1. One-time SSH config setup
+
+Open `~/.ssh/config` in a text editor and ensure it looks like this. **The order matters** — the `ControlPath` override must appear before the `Include` line, otherwise `.brev/ssh_config` sets it first and macOS hits a "path too long" error.
+
+```
+# ── Brev ControlPath fix ─────────────────────────────────────────────────────
+# MUST be before the Include. SSH takes the first match per directive.
+# %C expands to a short hash — avoids macOS's 104-char Unix socket limit.
+Host <instance-name> <instance-name>-host
+  ControlPath ~/.ssh/brev-ctl-%C
+
+Include "/Users/<your-username>/.brev/ssh_config"
+
+# ── Brev instance ─────────────────────────────────────────────────────────────
+Host <instance-name>
     HostName <BREV_PUBLIC_IP>
     User ubuntu
     IdentityFile ~/.ssh/brev
-EOF
 ```
 
-Replace `isaac-sim-pilot` with your instance name and `<BREV_PUBLIC_IP>` with the IP shown in the Brev dashboard (or obtained via `brev ls`).
+Replace `<instance-name>` with the name from `brev ls`, `<your-username>` with your macOS username, and `<BREV_PUBLIC_IP>` with the instance IP.
 
-> The Brev CLI writes your SSH private key to `~/.brev/brev.pem`. On some systems it is also symlinked or copied to `~/.ssh/brev`. Check which path exists on your machine (`ls ~/.ssh/brev ~/.brev/brev.pem`) and use whichever is present as the `IdentityFile` value.
+> **Key location:** Brev writes your SSH private key to `~/.brev/brev.pem`. On some systems it is also linked to `~/.ssh/brev`. Check which exists:
+> ```bash
+> ls ~/.ssh/brev ~/.brev/brev.pem
+> ```
+> Use whichever path is present as the `IdentityFile` value.
 
-After adding the entry, connect with:
+> **Avoid duplicates:** Do not use `cat >>` to append entries repeatedly — it creates duplicate `Host` blocks that cause silent failures. Edit the file directly.
+
+#### 2. Verify the connection
 
 ```bash
-ssh isaac-sim-pilot
+ssh <instance-name>
 ```
 
-This bypasses the AWS SSH restrictions and connects directly over port 22.
+Expected output:
+```
+Warning: Permanently added '...' (ED25519) to the list of known hosts.
+ubuntu@brev-...~$
+```
+
+You are now inside the Brev VM. From this point, use `ssh <instance-name>` instead of `brev shell`.
 
 All commands from this point run inside this remote shell (on the Brev VM).
+
+---
+
+### Option C — Open the Brev filesystem in VS Code (recommended for development)
+
+With the SSH config in place (Option B above), you can open the remote filesystem directly in VS Code. The repo includes `brev.code-workspace` — a multi-root workspace that opens both the cloned repo and the Isaac Sim data directory in a single Remote-SSH window.
+
+**Prerequisites:** Install the [Remote - SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh) extension in your local VS Code.
+
+```
+Extensions sidebar → search "Remote - SSH" → Install
+Extension ID: ms-vscode-remote.remote-ssh
+```
+
+**Connect:**
+
+1. Press `Cmd+Shift+P` (macOS) / `Ctrl+Shift+P` → **Remote-SSH: Connect to Host**.
+2. Type `<instance-name>` and press Enter.
+3. Select **Linux** when prompted for the platform.
+4. In the remote window: **File → Open Workspace from File** → `~/nvidia-digital-twin-pilot/brev.code-workspace`.
+
+The Explorer will show the repo and the Isaac Sim data directory side by side. The integrated terminal runs on the Brev VM.
+
+> For the full setup including cloning the repo and fixing Isaac Sim data directory permissions, see [Guide 02 — VS Code Remote Access](./02_vscode_access.md).
 
 ---
 
