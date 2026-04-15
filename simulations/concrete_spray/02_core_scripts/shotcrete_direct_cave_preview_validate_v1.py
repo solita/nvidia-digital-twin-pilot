@@ -15,7 +15,7 @@ _THIS_FILE = Path(__file__).resolve()
 SCRIPT_DIR = (
     _THIS_FILE.parent
     if _THIS_FILE.parent.name == "02_core_scripts"
-    else Path("/isaac-sim/.local/share/ov/data/workshop2/actual-files/02_core_scripts")
+    else Path("/isaac-sim/.local/share/ov/data/concrete_spray/02_core_scripts")
 )
 LAUNCHER_SCRIPT = SCRIPT_DIR / "shotcrete_direct_cave_preview_launcher_v1.py"
 STATE_KEY = "_SHOTCRETE_DIRECT_CAVE_PREVIEW_STATE"

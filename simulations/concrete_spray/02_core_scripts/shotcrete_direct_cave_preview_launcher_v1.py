@@ -16,7 +16,7 @@ _THIS_FILE = Path(__file__).resolve()
 SCRIPT_DIR = (
     _THIS_FILE.parent
     if _THIS_FILE.parent.name == "02_core_scripts"
-    else Path("/isaac-sim/.local/share/ov/data/workshop2/actual-files/02_core_scripts")
+    else Path("/isaac-sim/.local/share/ov/data/concrete_spray/02_core_scripts")
 )
 WORKSPACE_DIR = SCRIPT_DIR.parent
 
