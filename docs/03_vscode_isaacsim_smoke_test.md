@@ -46,6 +46,8 @@ EOF
 
 If `~/.vscode-server/data/User/settings.json` already contains other settings, do not overwrite it — merge manually instead (`cat` with `>` will replace the entire file).
 
+> **After a Brev instance restart:** the instance gets a new public IP. Re-run the command above on the remote to update `extensionIP`, then reload VS Code (`Ctrl+Shift+P` → **Developer: Reload Window**).
+
 After saving, reload VS Code: `Ctrl+Shift+P` → **Developer: Reload Window**.
 
 ---

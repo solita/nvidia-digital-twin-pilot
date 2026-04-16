@@ -145,6 +145,13 @@ Replace `<instance-name>` with the name from `brev ls`, `<your-username>` with y
 
 > **Avoid duplicates:** Do not use `cat >>` to append entries repeatedly — it creates duplicate `Host` blocks that cause silent failures. Edit the file directly.
 
+> **IP changes on restart:** AWS assigns a new public IP every time the instance is stopped and started. When that happens, update the `HostName` value in this block. Get the new IP from `~/.brev/ssh_config` after running `brev refresh`:
+> ```bash
+> brev refresh
+> grep -A2 "yapa-l40s-gpu1" ~/.brev/ssh_config | grep Hostname
+> ```
+> Then update `~/.ssh/config` with the new IP — the VS Code extension `extensionIP` in `settings.json` (Guide 03) also needs updating.
+
 #### 2. Verify the connection
 
 ```bash
@@ -327,6 +334,7 @@ Isaac Sim Full Streaming App is loaded.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Container exits immediately | EULA flag missing | Ensure `-e "ACCEPT_EULA=Y"` is present |
+| `ssh` connection timed out after restart | Instance got a new public IP | Run `brev refresh`, get new IP from `~/.brev/ssh_config`, update `HostName` in `~/.ssh/config` |
 | GPU not detected | Missing runtime flag | Add `--runtime=nvidia` to the `docker run` command |
 | WebRTC client cannot connect | Ports not exposed | Verify ports 49100 and 47998 are exposed to your IP in Brev |
 | Stream connects but is black | Isaac Sim still loading | Wait up to 5 minutes and try reconnecting |
