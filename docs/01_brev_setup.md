@@ -186,11 +186,10 @@ Extension ID: ms-vscode-remote.remote-ssh
 1. Press `Cmd+Shift+P` (macOS) / `Ctrl+Shift+P` → **Remote-SSH: Connect to Host**.
 2. Type `<instance-name>` and press Enter.
 3. Select **Linux** when prompted for the platform.
-4. In the remote window: **File → Open Workspace from File** → `~/nvidia-digital-twin-pilot/brev.code-workspace`.
 
-The Explorer will show the repo and the Isaac Sim data directory side by side. The integrated terminal runs on the Brev VM.
+You are now connected to the Brev VM in VS Code. The integrated terminal runs on the remote instance.
 
-> For the full setup including cloning the repo and fixing Isaac Sim data directory permissions, see [Guide 02 — VS Code Remote Access](./02_vscode_access.md).
+> For the full setup — cloning the repo into the Isaac Sim data volume and opening the workspace file — see [Guide 02 — VS Code Remote Access](./02_vscode_access.md).
 
 ---
 
