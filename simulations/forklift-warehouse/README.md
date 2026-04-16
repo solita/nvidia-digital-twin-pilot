@@ -38,40 +38,52 @@ forklift-warehouse/
 
 ---
 
-## Deploying to the Brev Machine
+## One-time Setup on Your Brev Instance
 
+Each developer uses their own Brev instance. Run these steps once after provisioning.
+
+**1. Clone the repo onto your Brev instance:**
 ```bash
-# Copy this simulation folder to the Isaac Sim data volume
-cp -r /path/to/<simulation_name> /home/ubuntu/docker/isaac-sim/data/
-
-# Fix ownership (Isaac Sim runs as UID 1234)
-sudo chown -R 1234:1234 /home/ubuntu/docker/isaac-sim/data/<simulation_name>
-
-# Fix permissions (VS Code runs as ubuntu / UID 1000)
-sudo chmod -R o+rwx /home/ubuntu/docker/isaac-sim/data/<simulation_name>
+git clone https://github.com/<org>/nvidia-digital-twin-pilot.git ~/nvidia-digital-twin-pilot
+cd ~/nvidia-digital-twin-pilot
 ```
 
-Inside the container the simulation will be at:
+**2. Create the Isaac Sim data directory and copy the scene:**
+```bash
+sudo mkdir -p /home/ubuntu/docker/isaac-sim/data/folklift-sim/01-scenes
+sudo chmod o+rwx /home/ubuntu/docker/isaac-sim/data
+sudo chmod o+rwx /home/ubuntu/docker/isaac-sim/data/folklift-sim
 
+cp simulations/forklift-warehouse/01_scenes/scene_assembly.usd \
+   /home/ubuntu/docker/isaac-sim/data/folklift-sim/01-scenes/scene_assembly.usd
+
+sudo chown -R 1234:1234 /home/ubuntu/docker/isaac-sim/data/folklift-sim
+sudo chmod -R o+rwx /home/ubuntu/docker/isaac-sim/data/folklift-sim
 ```
-/isaac-sim/.local/share/ov/data/<simulation_name>/
+
+**3. After every `git pull`, re-copy the scene if it changed:**
+```bash
+cp simulations/forklift-warehouse/01_scenes/scene_assembly.usd \
+   /home/ubuntu/docker/isaac-sim/data/folklift-sim/01-scenes/scene_assembly.usd
 ```
 
 ---
 
 ## Running the Simulation
 
-### Option A — Shell script
-
-```bash
-cd /isaac-sim/.local/share/ov/data/<simulation_name>
-./run_sim.sh
+**1. Open Isaac Sim in your browser:**
+```
+http://<your-brev-instance-ip>:8211/streaming/client/
 ```
 
-### Option B — VS Code Remote Execution
+**2. Load the scene in Isaac Sim:**
+File → Open → `/home/ubuntu/docker/isaac-sim/data/folklift-sim/01-scenes/scene_assembly.usd`
 
-1. Open `02_core_scripts/launcher.py` in the remote VS Code window.
-2. Press `Ctrl+Shift+P` → **Isaac Sim: Run Remotely**.
+**3. Run the controller from VS Code (Remote-SSH to your instance):**
+
+Open `simulations/forklift-warehouse/02_core_scripts/forklift_controller.py` and press `Ctrl+Shift+P` → **Isaac Sim: Run File Remotely**.
+
+The forklift will start driving the warehouse patrol route automatically.
 
 ---
 

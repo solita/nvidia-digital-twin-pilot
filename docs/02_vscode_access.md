@@ -96,6 +96,3 @@ All three commands should succeed without errors.
 
 **Next:** [Guide 03 — Connecting VS Code with Isaac Sim and Running the Smoke Test](./03_vscode_isaacsim_smoke_test.md)
 
----
-
-**Next:** [Guide 03 — Connecting VS Code with Isaac Sim and Running the Smoke Test](./03_vscode_isaacsim_smoke_test.md)
