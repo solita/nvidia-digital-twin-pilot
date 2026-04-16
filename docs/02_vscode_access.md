@@ -12,34 +12,33 @@ This guide covers opening both the repo and the Isaac Sim data directory in a si
 
 ---
 
-## Step 1 — Clone the Repo and Open the Multi-Root Workspace
+## Step 1 — Clone the Repo and Open the Workspace
 
-The repo includes `brev.code-workspace` — a VS Code multi-root workspace file that opens both the repo and the live Isaac Sim data directory in a single Remote-SSH window. This lets you copy scripts from the repo directly into the Isaac Sim working directory without switching windows.
+The repo is cloned **directly into the Isaac Sim data volume**. This means scene USD files are accessible to Isaac Sim without any copy-paste step — `git pull` is all you need to update them.
 
-#### 1a. Clone the repo onto the Brev instance
+#### 1a. Clone the repo into the Isaac Sim data directory
 
 In an SSH terminal on the Brev instance:
 
 ```bash
-git clone <repo-url> ~/nvidia-digital-twin-pilot
+sudo mkdir -p /home/ubuntu/docker/isaac-sim/data
+sudo chmod o+rwx /home/ubuntu/docker/isaac-sim/data
+
+git clone <repo-url> /home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot
+
+sudo chown -R 1234:1234 /home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot
+sudo chmod -R o+rwx /home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot
 ```
 
 #### 1b. Open the workspace in VS Code
 
 1. Press `Cmd+Shift+P` (macOS) / `Ctrl+Shift+P` → **Remote-SSH: Connect to Host** → `<instance-name>`.
 2. In the remote window: **File → Open Workspace from File**.
-3. Navigate to `~/nvidia-digital-twin-pilot/brev.code-workspace` and click **Open**.
+3. Navigate to `/home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot/brev.code-workspace` and click **Open**.
 
-VS Code now shows two root folders in the Explorer:
+VS Code opens the repo root in the Explorer. The integrated terminal runs on the Brev VM.
 
-| Folder | What it is |
-|---|---|
-| `nvidia-digital-twin-pilot (repo)` | The cloned repo — smoke test, templates, example simulations |
-| `Isaac Sim Data` | `/home/ubuntu/docker/isaac-sim/data` — the live volume-mounted data dir |
-
-You can drag-and-drop or copy files between the two trees. The integrated terminal runs on the Brev VM.
-
-> `brev.code-workspace` is committed to the repo so every developer gets the same setup after cloning.
+> Inside the Isaac Sim container the repo is visible at `/isaac-sim/data/nvidia-digital-twin-pilot/`.
 
 ---
 
@@ -90,7 +89,9 @@ All three commands should succeed without errors.
 | Volume-mounted data path (host) | `/home/ubuntu/docker/isaac-sim/data/` |
 | Volume-mounted data path (container) | `/isaac-sim/.local/share/ov/data/` |
 | Permission fix command | `sudo chmod o+rwx <directory>` |
-| Workspace file | `~/nvidia-digital-twin-pilot/brev.code-workspace` |
+| Repo + data path (host) | `/home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot/` |
+| Repo path (container) | `/isaac-sim/data/nvidia-digital-twin-pilot/` |
+| Workspace file | `/home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot/brev.code-workspace` |
 
 ---
 
