@@ -42,30 +42,19 @@ forklift-warehouse/
 
 Each developer uses their own Brev instance. Run these steps once after provisioning.
 
-**1. Clone the repo onto your Brev instance:**
+**Clone the repo directly into the Isaac Sim data volume:**
 ```bash
-git clone https://github.com/<org>/nvidia-digital-twin-pilot.git ~/nvidia-digital-twin-pilot
-cd ~/nvidia-digital-twin-pilot
-```
-
-**2. Create the Isaac Sim data directory and copy the scene:**
-```bash
-sudo mkdir -p /home/ubuntu/docker/isaac-sim/data/folklift-sim/01-scenes
+sudo mkdir -p /home/ubuntu/docker/isaac-sim/data
 sudo chmod o+rwx /home/ubuntu/docker/isaac-sim/data
-sudo chmod o+rwx /home/ubuntu/docker/isaac-sim/data/folklift-sim
 
-cp simulations/forklift-warehouse/01_scenes/scene_assembly.usd \
-   /home/ubuntu/docker/isaac-sim/data/folklift-sim/01-scenes/scene_assembly.usd
+git clone https://github.com/<org>/nvidia-digital-twin-pilot.git \
+  /home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot
 
-sudo chown -R 1234:1234 /home/ubuntu/docker/isaac-sim/data/folklift-sim
-sudo chmod -R o+rwx /home/ubuntu/docker/isaac-sim/data/folklift-sim
+sudo chown -R 1234:1234 /home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot
+sudo chmod -R o+rwx /home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot
 ```
 
-**3. After every `git pull`, re-copy the scene if it changed:**
-```bash
-cp simulations/forklift-warehouse/01_scenes/scene_assembly.usd \
-   /home/ubuntu/docker/isaac-sim/data/folklift-sim/01-scenes/scene_assembly.usd
-```
+That's it — no copy-paste needed. Scene files are immediately visible to Isaac Sim. After that, `git pull` is all you need to pick up updates.
 
 ---
 
@@ -77,7 +66,7 @@ http://<your-brev-instance-ip>:8211/streaming/client/
 ```
 
 **2. Load the scene in Isaac Sim:**
-File → Open → `/home/ubuntu/docker/isaac-sim/data/folklift-sim/01-scenes/scene_assembly.usd`
+File → Open → `/isaac-sim/data/nvidia-digital-twin-pilot/simulations/forklift-warehouse/01_scenes/scene_assembly.usd`
 
 **3. Run the controller from VS Code (Remote-SSH to your instance):**
 
