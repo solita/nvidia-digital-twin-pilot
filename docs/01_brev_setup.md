@@ -234,9 +234,10 @@ sudo chown -R 1234:1234 ~/docker/isaac-sim
 
 ---
 
-## Step 7 — Start the Isaac Sim Container
+## Step 7 — Start the Isaac Sim Container and Launch it in headless WebRTC mode
 
 ```bash
+PUBLIC_IP=$(curl -s ifconfig.me) && \
 docker run --name isaac-sim \
   --entrypoint bash \
   -it --gpus all \
@@ -250,7 +251,8 @@ docker run --name isaac-sim \
   -v ~/docker/isaac-sim/data:/isaac-sim/.local/share/ov/data:rw \
   -v ~/docker/isaac-sim/pkg:/isaac-sim/.local/share/ov/pkg:rw \
   -u 1234:1234 \
-  nvcr.io/nvidia/isaac-sim:5.1.0
+  nvcr.io/nvidia/isaac-sim:5.1.0 \
+  -lc "./runheadless.sh --/app/livestream/publicEndpointAddress=$PUBLIC_IP --/app/livestream/port=49100"
 ```
 
 > By setting `-e "ACCEPT_EULA=Y"` you accept the [NVIDIA Omniverse License Agreement](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/common/NVIDIA_Omniverse_License_Agreement.html).  
@@ -258,27 +260,13 @@ docker run --name isaac-sim \
 > Add `--runtime=nvidia` if the container cannot detect the GPU.
 
 You are now inside the container's bash shell.
-
----
-
-## Step 8 — Launch Isaac Sim in Headless WebRTC Mode
-
-From inside the container:
-
-```bash
-PUBLIC_IP=$(curl -s ifconfig.me) && \
-  ./runheadless.sh \
-  --/app/livestream/publicEndpointAddress=$PUBLIC_IP \
-  --/app/livestream/port=49100
-```
-
 Isaac Sim will take 2–5 minutes to fully load on first run (shader compilation). Subsequent starts are faster due to the cached volumes.
 
 ---
 
-## Step 9 — Connect via WebRTC Client
+## Step 8 — Connect via WebRTC Client
 
-### 9a — Download the Isaac Sim WebRTC Streaming Client
+### 8a — Download the Isaac Sim WebRTC Streaming Client
 
 Go to the [Isaac Sim Download page](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/installation/download.html#isaac-sim-latest-release) and download **Isaac Sim WebRTC Streaming Client v1.1.5** for your platform:
 
@@ -313,7 +301,7 @@ chmod +x IsaacSimWebRTCStreamingClient-*.AppImage
 
 ---
 
-### 9b — Connect to Isaac Sim
+### 8b — Connect to Isaac Sim
 
 1. Open the **Isaac Sim WebRTC Streaming Client** on your local machine.
 2. Enter the **public IP** from Step 4 to the Server text box.
