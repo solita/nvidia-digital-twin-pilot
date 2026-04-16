@@ -30,6 +30,12 @@ sudo chown -R 1234:1234 /home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-p
 sudo chmod -R o+rwx /home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot
 ```
 
+After the `chown`, the repo directory is owned by UID 1234 — not the `ubuntu` user. Git refuses to operate in directories it doesn't own, so VS Code's Source Control panel will show a "dubious ownership" error. Fix it once:
+
+```bash
+git config --global --add safe.directory /home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot
+```
+
 #### 1b. Open the workspace in VS Code
 
 1. Press `Cmd+Shift+P` (macOS) / `Ctrl+Shift+P` → **Remote-SSH: Connect to Host** → `<instance-name>`.

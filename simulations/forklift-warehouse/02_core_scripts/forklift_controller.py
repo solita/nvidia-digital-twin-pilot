@@ -5,7 +5,19 @@ Moves the forklift along a list of (x, y) waypoints by updating its root
 Xform transform each simulation step. This approach is physics-independent
 and works with any USD forklift asset regardless of joint configuration.
 
-Run via VS Code: open this file and press Ctrl+Shift+P → Isaac Sim: Run Remotely
+Movement model:
+  - Variable speed: accelerates to SPEED_MAX, decelerates in SLOW_ZONE near
+    each waypoint and when the required heading change exceeds TURN_SLOW_THRESH.
+  - Smooth heading: rotation is slew-rate limited to HEADING_SLEW_DEG per step,
+    so the forklift turns gradually rather than snapping.
+
+Spatial data (from helper scripts):
+  Warehouse navigable bounds: X(-10.49 → 9.48), Y(-17.69 → 18.99)
+  Floor Z: 0.0
+  Forklift size: 3.03 m (X) × 1.13 m (Y) × 2.94 m (Z)
+  Forklift pivot: offset ~0.63 m behind geometric centre on X axis
+
+Run via VS Code: open this file and press Ctrl+Shift+P → Isaac Sim: Run File Remotely
 Scene must already be open in Isaac Sim (scene_assembly.usd).
 
 Dev owner: Dev 2
@@ -24,19 +36,33 @@ from pxr import Gf, UsdGeom
 
 FORKLIFT_PRIM_PATH = "/World/forklift_b"
 
-# Waypoints (x, y) in stage units.
-# Warehouse bounds: X (-12.5 → 11.5), Y (-18.8 → 20.1) — units are metres.
-# These waypoints patrol a rectangle ~1.5 m inside the walls.
+# Floor Z from get_warehouse_spatial_info.py output
+FLOOR_Z = 0.0
+
+# Serpentine patrol: left aisle north, cross top, right aisle south, return.
+# Navigable bounds: X(-10.49 → 9.48), Y(-17.69 → 18.99)
 WAYPOINTS: list[tuple[float, float]] = [
-    (-5.185119007723585, -5.40847410883111),   # start — lower-left aisle
-    (-8.0,  17.0),   # drive up left side
-    ( 8.0,  17.0),   # cross upper end
-    ( 8.0, -15.0),   # drive down right side
-    (-5.185119007723585, -5.40847410883111),   # return to start
+    ( 0.0,   0.0),   # start — centre of warehouse
+    (-9.0, -16.0),   # lower-left corner
+    (-9.0,  17.0),   # upper-left corner
+    ( 0.0,  17.0),   # top-centre cross
+    ( 0.0, -16.0),   # bottom-centre
+    ( 8.5, -16.0),   # lower-right corner
+    ( 8.5,  17.0),   # upper-right corner
+    ( 0.0,   0.0),   # return to centre
 ]
 
-SPEED_PER_STEP = 0.05          # metres per simulation step (~5 cm/step, tune to taste)
-WAYPOINT_TOLERANCE = 0.15      # metres — distance at which a waypoint is considered reached
+# Speed (metres per simulation step, sim runs ~60 Hz)
+SPEED_MAX          = 0.10   # cruising speed  (~6 m/s at 60 Hz — reduce if too fast)
+SPEED_MIN          = 0.02   # minimum speed when braking / turning
+SLOW_ZONE          = 3.0    # metres from waypoint at which braking begins
+
+# Heading
+HEADING_SLEW_DEG   = 4.0    # max heading change per step — lower = smoother turns
+TURN_SLOW_THRESH   = 45.0   # heading error (°) above which speed is clamped to SPEED_MIN
+
+# Arrival
+WAYPOINT_TOLERANCE = 0.25   # metres — distance at which a waypoint is considered reached
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -80,6 +106,18 @@ def _set_heading(xform: UsdGeom.Xformable, angle_deg: float) -> None:
         xform.AddOrientOp(UsdGeom.XformOp.PrecisionFloat).Set(gf_q)
 
 
+def _angle_diff(target: float, current: float) -> float:
+    """Shortest signed angular difference in degrees, range [-180, 180]."""
+    return (target - current + 180) % 360 - 180
+
+
+def _slew_heading(current: float, target: float, max_step: float) -> float:
+    """Advance current heading toward target by at most max_step degrees."""
+    diff = _angle_diff(target, current)
+    step = max(-max_step, min(max_step, diff))
+    return current + step
+
+
 # ── Main controller loop ──────────────────────────────────────────────────────
 
 async def run_forklift() -> None:
@@ -91,34 +129,53 @@ async def run_forklift() -> None:
         timeline.play()
         await app.next_update_async()
 
-    carb.log_info("[forklift_controller] Starting waypoint drive")
+    carb.log_info("[forklift_controller] Starting patrol route")
 
     waypoint_index = 0
+    current_heading = 0.0   # degrees; 0 = facing +X axis (matches forklift rest pose)
 
     while waypoint_index < len(WAYPOINTS):
         wx, wy = WAYPOINTS[waypoint_index]
-        cx, cy, cz = _get_position(xform)
+        cx, cy, _ = _get_position(xform)
 
         dx = wx - cx
         dy = wy - cy
         dist = math.hypot(dx, dy)
 
+        # ── Arrived ───────────────────────────────────────────────────────────
         if dist <= WAYPOINT_TOLERANCE:
-            carb.log_info(f"[forklift_controller] Reached waypoint {waypoint_index}: ({wx}, {wy})")
+            carb.log_info(
+                f"[forklift_controller] Waypoint {waypoint_index}/{len(WAYPOINTS)-1} "
+                f"reached: ({wx}, {wy})"
+            )
             waypoint_index += 1
             await app.next_update_async()
             continue
 
-        step = min(SPEED_PER_STEP, dist)
+        # ── Target heading ────────────────────────────────────────────────────
+        target_heading = math.degrees(math.atan2(dy, dx))
+        heading_error  = abs(_angle_diff(target_heading, current_heading))
+
+        # ── Smooth heading (slew-rate limited) ───────────────────────────────
+        current_heading = _slew_heading(current_heading, target_heading, HEADING_SLEW_DEG)
+        _set_heading(xform, current_heading)
+
+        # ── Variable speed ────────────────────────────────────────────────────
+        # Brake when close to waypoint or mid-turn
+        proximity_t = min(1.0, dist / SLOW_ZONE)                        # 0→1
+        turn_t      = max(0.0, 1.0 - heading_error / TURN_SLOW_THRESH)  # 0→1
+        speed       = SPEED_MIN + (SPEED_MAX - SPEED_MIN) * proximity_t * turn_t
+        speed       = max(SPEED_MIN, speed)
+
+        # ── Move ──────────────────────────────────────────────────────────────
+        step = min(speed, dist)
         nx = cx + (dx / dist) * step
         ny = cy + (dy / dist) * step
-
-        _set_position(xform, nx, ny, cz)
-        _set_heading(xform, math.degrees(math.atan2(dy, dx)))
+        _set_position(xform, nx, ny, FLOOR_Z)
 
         await app.next_update_async()
 
-    carb.log_info("[forklift_controller] All waypoints reached.")
+    carb.log_info("[forklift_controller] Patrol complete.")
 
 
 import asyncio
