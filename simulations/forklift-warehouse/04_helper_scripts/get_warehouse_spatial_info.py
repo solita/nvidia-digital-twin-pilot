@@ -14,12 +14,21 @@ Run via VS Code: open this file and press Ctrl+Shift+P → Isaac Sim: Run File R
 Scene must already be open in Isaac Sim (scene_assembly.usd).
 """
 
+import io
+import os
+import sys
+
 import omni.usd
 from pxr import Gf, UsdGeom
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
 WAREHOUSE_PRIM_PATH = "/World/warehouse"
+
+# Output file — written alongside console output
+# Path is inside the container; maps to host via Docker bind mount:
+#   container: /isaac-sim/.local/share/ov/data/  →  host: /home/ubuntu/docker/isaac-sim/data/
+OUTPUT_FILE = "/isaac-sim/.local/share/ov/data/nvidia-digital-twin-pilot/simulations/forklift-warehouse/04_current_outputs/warehouse_spatial_info_latest.txt"
 
 # Forklift half-extents from get_forklift_transform.py (bbox size / 2)
 # Size: X=3.031m (width), Y=1.130m (length), Z=2.935m (height)
@@ -28,6 +37,23 @@ FORKLIFT_HALF_Y = 1.130 / 2   # 0.565 m
 
 # Extra clearance margin to add on top of forklift half-extents (metres)
 CLEARANCE_MARGIN = 0.5
+
+# ── Tee stdout → buffer (written to OUTPUT_FILE at end) ──────────────────────
+
+_buffer = io.StringIO()
+_orig_stdout = sys.stdout
+
+class _Tee:
+    def __init__(self, *streams):
+        self.streams = streams
+    def write(self, data):
+        for s in self.streams:
+            s.write(data)
+    def flush(self):
+        for s in self.streams:
+            s.flush()
+
+sys.stdout = _Tee(_orig_stdout, _buffer)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -119,3 +145,14 @@ else:
     else:
         print("Child prims: none (warehouse may be a single mesh)")
     print("=" * 60)
+
+# ── Write captured output to file ─────────────────────────────────────────────
+sys.stdout = _orig_stdout
+try:
+    out_path = os.path.normpath(OUTPUT_FILE)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w") as f:
+        f.write(_buffer.getvalue())
+    print(f"\nOutput written to: {out_path}")
+except Exception as e:
+    print(f"WARNING: Could not write output file: {e}")
