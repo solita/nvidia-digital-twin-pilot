@@ -133,17 +133,45 @@ else:
     print(f"  Forklift fits    : {'YES' if fits else 'NO — reduce CLEARANCE_MARGIN or check scale'}")
     print("-" * 60)
 
-    # ── Child prims ────────────────────────────────────────────────────────────
+    # ── Child prims — obstacle/rack only (skip full list for speed) ───────────
+    OBSTACLE_KEYWORDS = ("rack", "shelf", "shelv", "pallet", "column", "beam",
+                         "bracket", "storage", "post", "pillar")
     children = list(prim.GetChildren())
-    if children:
-        print(f"Child prims ({len(children)} total):")
-        for child in children:
-            cr = _bbox(child, bbox_cache)
-            cs = cr.GetMax() - cr.GetMin()
-            print(f"  {child.GetPath().pathString:<40} type={child.GetTypeName():<12} "
-                  f"size=({cs[0]:.2f}, {cs[1]:.2f}, {cs[2]:.2f})")
+    obstacles = []
+    for child in children:
+        name_lower = child.GetPath().name.lower()
+        if any(kw in name_lower for kw in OBSTACLE_KEYWORDS):
+            cr  = _bbox(child, bbox_cache)
+            ctr = (cr.GetMin() + cr.GetMax()) / 2
+            cs  = cr.GetMax() - cr.GetMin()
+            obstacles.append((child.GetPath().pathString, ctr, cs, cr))
+
+    if obstacles:
+        print(f"\nObstacles / racks ({len(obstacles)} matching prims):")
+        print(f"  {'Name':<45} {'CentreX':>8} {'CentreY':>8} {'SizeX':>7} {'SizeY':>7}")
+        print(f"  {'-'*45} {'-'*8} {'-'*8} {'-'*7} {'-'*7}")
+        for path, ctr, cs, cr in sorted(obstacles, key=lambda t: t[1][1]):
+            print(f"  {path:<45} {ctr[0]:>8.2f} {ctr[1]:>8.2f} {cs[0]:>7.2f} {cs[1]:>7.2f}")
     else:
-        print("Child prims: none (warehouse may be a single mesh)")
+        print(f"\nNo rack/shelf/pallet prims detected by keyword (checked {len(children)} children).")
+
+    # ── Forklift position ──────────────────────────────────────────────────────
+    print("\n" + "-" * 60)
+    fl_prim = stage.GetPrimAtPath("/World/forklift_b/body")
+    if fl_prim.IsValid():
+        from pxr import Usd
+        import math
+        m   = UsdGeom.Xformable(fl_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        pos = m.ExtractTranslation()
+        q   = m.ExtractRotationQuat()
+        xi, yi, zi = q.GetImaginary()
+        w   = q.GetReal()
+        yaw = math.degrees(math.atan2(2.0*(w*zi + xi*yi), 1.0 - 2.0*(yi*yi + zi*zi)))
+        print(f"Forklift position (/World/forklift_b/body):")
+        print(f"  X={pos[0]:.3f}  Y={pos[1]:.3f}  Z={pos[2]:.3f}  heading={yaw:.2f} deg")
+    else:
+        print("Forklift prim /World/forklift_b/body not found (run with scene loaded).")
+
     print("=" * 60)
 
 # ── Write captured output to file ─────────────────────────────────────────────

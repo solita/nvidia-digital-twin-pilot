@@ -30,7 +30,7 @@ DRIVE_JOINT_PATH = "/World/forklift_b/back_wheel_joints/back_wheel_drive"
 STEER_JOINT_PATH = "/World/forklift_b/back_wheel_joints/back_wheel_swivel"
 FORKLIFT_PRIM    = "/World/forklift_b/body"  # physics rigid body — this is what actually moves
 
-DRIVE_VELOCITY = +200.0   # deg/s wheel spin — positive = forward (north at heading 90°)
+DRIVE_VELOCITY = +200.0   # deg/s wheel spin -- positive = forward/south at heading -90°
 SETTLE_FRAMES  =  60      # physics settle before driving
 RAMP_FRAMES    =  60      # ramp from 0 → full speed to avoid torque spike
 
@@ -46,12 +46,29 @@ STEER_DEADBAND =   2.5    # deg — ignore errors smaller than this (prevents hu
 STEER_MAX      =  30.0    # deg — clamp steer command to ±30° for gradual turns
 HEADING_SMOOTH =   0.40   # EMA factor for heading (0=frozen, 1=raw) — filters sensor noise
 
-# Waypoint: due north of start, confirms heading correction.
-# Y=10 is ~27m north — well within the warehouse. Increase once layout is confirmed.
+# Patrol route -- designed from warehouse_spatial_info_latest.txt obstacle data.
+#
+# Key obstacles:
+#   West rack:  X = -30.27 to -27.02,  Y = -12.06 to +36.38  (solid collision)
+#   Columns:    X = -27.16, -4.37, +8.41, +26.52  (0.60m wide, full height)
+#   FL width:   3.03m (half = 1.52m)
+#
+# Aisles used:
+#   South cross  Y = -45  (below all columns south end Y=-27.80)
+#   East aisle   X = +20  (between columns at X=8.41 and X=26.52)
+#   North cross  Y = +55  (above all racks north end Y=36.38 and pillars Y=45.12)
+#   West-center  X = -24  (FL west edge -25.52, rack east edge -27.02 -> 1.50m clearance)
+#
+# REST_HEADING must be -90 deg so DRIVE_VELOCITY=+200 drives straight south to WP0.
 WAYPOINTS = [
-    (-29.09, 10.0),   # conservative test waypoint — due north of rest position
+    (-15.0, -33.0),   # WP0: south end        -- actual floor-obstacle boundary is Y=-36.4, 3m buffer
+    ( 20.0, -33.0),   # WP1: south-east       -- east in south cross-aisle
+    ( 20.0,  55.0),   # WP2: north-east       -- north in east aisle
+    (-24.0,  55.0),   # WP3: north-west       -- west in north cross-aisle
+    (-24.0, -33.0),   # WP4: south-west       -- south in west-center aisle
+    (-15.0, -17.5),   # WP5: start zone       -- loops back to WP0
 ]
-ARRIVAL_RADIUS = 3.0   # metres — stop when within this of waypoint
+ARRIVAL_RADIUS = 4.0   # metres -- advance to next waypoint when within this
 
 DIAG_LOG = (
     "/isaac-sim/.local/share/ov/data/nvidia-digital-twin-pilot/"
@@ -128,12 +145,13 @@ async def run_forklift() -> None:
     diag = open(DIAG_LOG, "w", buffering=1)
     diag.write("frame, fx, fy, heading, target_hdg, err, steer_cmd\n")
 
-    carb.log_info(f"[forklift] Phase 2 GO — heading-corrected drive toward {WAYPOINTS[0]}")
+    carb.log_info(f"[forklift] Phase 3 patrol START -- {len(WAYPOINTS)} waypoints, looping forever")
 
     frame      = 0
     wp_index   = 0
+    lap        = 0
 
-    while wp_index < len(WAYPOINTS):
+    while True:  # loop forever
         if not timeline.is_playing():
             drive_api.GetTargetVelocityAttr().Set(0.0)
             diag.flush()
@@ -152,10 +170,12 @@ async def run_forklift() -> None:
         # ── Arrival check ─────────────────────────────────────────────────────
         dist = math.hypot(wx - fx, wy - fy)
         if dist < ARRIVAL_RADIUS:
-            carb.log_info(f"[forklift] Arrived at waypoint {wp_index}: ({wx}, {wy})")
+            carb.log_info(f"[forklift] WP {wp_index} reached: ({wx},{wy})  lap={lap}")
             wp_index += 1
             if wp_index >= len(WAYPOINTS):
-                break
+                wp_index = 0
+                lap += 1
+                carb.log_info(f"[forklift] Lap {lap} complete -- looping")
             continue
 
         # ── Heading error: direction to waypoint vs current heading ───────────
@@ -175,24 +195,21 @@ async def run_forklift() -> None:
         # ── Drive ─────────────────────────────────────────────────────────────
         scale = min(1.0, frame / RAMP_FRAMES)
         drive_api.GetTargetVelocityAttr().Set(DRIVE_VELOCITY * scale)
-        steer_api.GetTargetPositionAttr().Set(steer_cmd)
+        steer_api.GetTargetPositionAttr().Set(-steer_cmd)  # negated: joint localRot1 90° offset inverts steer direction
 
-        # ── Diag every 30 frames ──────────────────────────────────────────────
-        if frame % 30 == 0:
+        # ── Diag every 60 frames ──────────────────────────────────────────────
+        if frame % 60 == 0:
             msg = (
-                f"frame={frame:4d}  pos=({fx:.1f},{fy:.1f})  "
-                f"hdg={smooth_heading:.1f}°  target={target_hdg:.1f}°  "
-                f"err={heading_err:+.1f}°  steer={steer_cmd:+.1f}°  dist={dist:.1f}m"
+                f"frame={frame:5d}  pos=({fx:.1f},{fy:.1f})  "
+                f"hdg={smooth_heading:.1f}  target={target_hdg:.1f}  "
+                f"err={heading_err:+.1f}  steer={steer_cmd:+.1f}  "
+                f"dist={dist:.1f}m  wp={wp_index}  lap={lap}"
             )
             carb.log_info(f"[forklift] {msg}")
             diag.write(msg + "\n")
 
         frame += 1
         await app.next_update_async()
-
-    # ── Arrived — stop ────────────────────────────────────────────────────────
-    drive_api.GetTargetVelocityAttr().Set(0.0)
-    steer_api.GetTargetPositionAttr().Set(0.0)
     diag.write("ARRIVED — controller stopped\n")
     diag.close()
     carb.log_info("[forklift] All waypoints reached. Stopped.")

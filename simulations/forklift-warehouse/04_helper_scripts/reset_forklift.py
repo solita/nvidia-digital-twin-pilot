@@ -17,14 +17,12 @@ from pxr import Gf, UsdGeom, UsdPhysics
 # ── Must match forklift_controller.py ────────────────────────────────────────
 FORKLIFT_PRIM_PATH = "/World/forklift_b"
 
-# Rest position and heading from get_forklift_transform.py
-# REST_HEADING set to 90° (north) to match the straight-line test waypoint
-# so the controller starts with zero initial turn.
-# Change back to 177.39 when restoring the full patrol route.
-REST_X       = -29.090045
-REST_Y       = -17.476563
+# Rest position: moved to X=-15 (open center-west area between columns at X=-27 and X=-4).
+# Original X=-29.09 was hemmed in by BracketBeam at X=-30 and racks at X=-27 -- no turning room.
+REST_X       = -15.0
+REST_Y       = -17.5
 REST_Z       =  0.0
-REST_HEADING =  90.0   # face north — aligns with straight-line test waypoint (-29.09, 53.0)
+REST_HEADING = -90.0   # south-facing: DRIVE_VELOCITY=+200 drives straight south toward WP0
 
 # ── Cancel any running controller task ───────────────────────────────────────
 _TASK_KEY = "_forklift_controller_task"
