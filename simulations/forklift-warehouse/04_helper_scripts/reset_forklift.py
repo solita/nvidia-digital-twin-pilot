@@ -12,7 +12,7 @@ import asyncio
 import carb
 import omni.timeline
 import omni.usd
-from pxr import Gf, UsdGeom
+from pxr import Gf, UsdGeom, UsdPhysics
 
 # ── Must match forklift_controller.py ────────────────────────────────────────
 FORKLIFT_PRIM_PATH = "/World/forklift_b"
@@ -69,4 +69,17 @@ else:
         f"[reset_forklift] Forklift reset to ({REST_X}, {REST_Y}, {REST_Z}), "
         f"heading {REST_HEADING}°"
     )
+
+    # ── Reset steer joint angle to 0 ─────────────────────────────────────────
+    # Body transform reset does NOT reset joint angles in USD physics.
+    # If the swivel is left at a non-zero angle, driving creates rotation not movement.
+    steer_joint = stage.GetPrimAtPath("/World/forklift_b/back_wheel_joints/back_wheel_swivel")
+    if steer_joint.IsValid():
+        steer_api = UsdPhysics.DriveAPI(steer_joint, "angular")
+        steer_api.GetTargetPositionAttr().Set(0.0)
+        # Use high damping, zero stiffness — holds position without snapping
+        steer_api.GetStiffnessAttr().Set(3000.0)
+        steer_api.GetDampingAttr().Set(10000.0)
+        carb.log_info("[reset_forklift] Steer joint zeroed.")
+
     print(f"[reset_forklift] Done — forklift back at start, controller stopped.")

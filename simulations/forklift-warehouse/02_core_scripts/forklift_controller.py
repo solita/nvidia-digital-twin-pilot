@@ -1,31 +1,9 @@
 """
-forklift_controller.py — Forklift physics-based driving controller.
+forklift_controller.py — Bare minimum: drive the forklift straight forward.
 
-Drives the forklift along WAYPOINTS in an infinite closed loop using the
-asset’s ArticulationRoot and wheel DriveAPIs (no transform manipulation).
-
-Drive model:
-  - Rear-wheel drive:  targetVelocity on back_wheel_drive  (RevoluteJoint, axis X)
-  - Rear-wheel steer:  targetPosition on back_wheel_swivel (RevoluteJoint, axis Z, ±60°)
-  - Heading read each frame from the chassis body world transform.
-  - Speed slows near waypoints and during large heading errors.
-  - Obstacle avoidance hook: set OBSTACLE_AVOIDANCE_ENABLED = True (Phase 4).
-
-TUNING:
-  If the forklift drives backward  → negate DRIVE_VEL_MAX.
-  If the forklift steers the wrong way → negate STEER_GAIN.
-
-Joint data (from inspect_forklift_joints.py):
-  ArticulationRootAPI at /World/forklift_b
-  back_wheel_drive  — DriveAPI:angular, stiffness=100,     damping=10000 (vel-drive)
-  back_wheel_swivel — DriveAPI:angular, stiffness=100000,  damping=100   (pos-drive)
-
-Spatial data (from get_warehouse_spatial_info.py — Apr 20 2026):
-  Warehouse size:    72.46 m (X) × 116.62 m (Y) × 29.48 m (Z)
-  Navigable bounds:  X(-34.716 → 33.709), Y(-53.770 → 60.718)
-  Floor Z:           -0.0002
-
-Prerequisites: run setup_physics.py once before running this controller.
+No waypoints, no steering logic, no heading correction.
+The forklift drives in whatever direction it is currently facing.
+Flip DRIVE_VELOCITY sign if it goes the wrong way.
 
 Run via VS Code: Ctrl+Shift+P → Isaac Sim: Run File Remotely
 Scene must already be open in Isaac Sim (scene_assembly.usd).
@@ -36,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 
 import carb
 import omni.kit.app
@@ -45,214 +24,119 @@ from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-# Prim paths (from inspect_forklift_joints.py)
-FORKLIFT_PRIM_PATH = "/World/forklift_b"
-BODY_PRIM_PATH     = "/World/forklift_b/body"                               # chassis rigid body
-DRIVE_JOINT_PATH   = "/World/forklift_b/back_wheel_joints/back_wheel_drive"  # propulsion
-STEER_JOINT_PATH   = "/World/forklift_b/back_wheel_joints/back_wheel_swivel" # steering
+DRIVE_JOINT_PATH = "/World/forklift_b/back_wheel_joints/back_wheel_drive"
+STEER_JOINT_PATH = "/World/forklift_b/back_wheel_joints/back_wheel_swivel"
 
-# Floor Z from get_warehouse_spatial_info.py output
-FLOOR_Z = -0.0002
+DRIVE_VELOCITY = -200.0  # deg/s — flip sign if forklift goes backward
+SETTLE_FRAMES  = 60       # frames to hold still before driving starts
+RAMP_FRAMES    = 60       # frames to ramp from 0 → full speed (prevents torque spike)
 
-# Single-waypoint straight-line test.
-# Forklift drives straight north from rest position and stops.
-# Index wraps (0+1)%1 = 0 → holds position once arrived.
-# Restore full route once straight-line physics is confirmed clean.
-WAYPOINTS: list[tuple[float, float]] = [
-    (-29.09,  53.0),   # due north — same X as start, no turn required
-]
+# Steer joint: position mode targeting 0° (wheel straight).
+# "Straight" = joint angle 0° = world steer_angle -90° (localRot1 offset is intentional).
+# Stiffness must be HIGH enough to resist caster-trail dynamics during motion.
+# The startup torque-spike (old bug) is now gone — drive velocity is zeroed before play.
+STEER_STIFFNESS_SETTLE = 20000.0  # snaps wheel straight during settle (forklift stationary)
+STEER_STIFFNESS_DRIVE  = 40000.0  # strong enough to resist caster drift under load
+STEER_DAMPING          = 10000.0  # damping to prevent oscillation
 
-# Drive: target velocity on back_wheel_drive joint (degrees/second, angular)
-# DRIVE_DIRECTION: 1.0 = forward, -1.0 = forward is the other way.
-DRIVE_DIRECTION  =  -1.0   # flip if forklift drives backward
-DRIVE_VEL_MAX    =  1800.0  # cruise speed (deg/s) — raised for faster post-turn straight
-DRIVE_VEL_TURN   =   300.0  # speed while turning — raised so exit from turn is snappier
-DRIVE_VEL_MIN    =    60.0  # minimum speed near waypoints
-SLOW_ZONE        =    6.0   # metres from waypoint at which braking begins
-BRAKE_HEADING    =   30.0   # heading error (°) above which forklift nearly stops to turn in place
-ACCEL_RAMP_FRAMES =  120    # frames to ramp from 0 → full speed on startup (~2 s at 60 Hz)
-
-# Steer: target position on back_wheel_swivel joint (degrees)
-# STEER_DIRECTION: 1.0 = normal, -1.0 = flip if forklift steers the wrong way.
-STEER_DIRECTION  =  -1.0   # flip if steering is inverted
-STEER_KP         =   0.30  # P gain: heading error (°) → steer angle
-STEER_MAX        =  30.0   # hard clamp on commanded steer angle
-STEER_DEADBAND   =   2.5   # tighter: catch drift before it becomes visible (was 8°)
-STEER_JOINT_STIFFNESS = 800.0
-STEER_JOINT_DAMPING   = 3000.0  # higher damping → less joint-level ringing
-HEADING_SMOOTH   =   0.40  # faster tracking so filtered heading closely follows actual (was 0.20)
-
-# Heading
-TURN_SLOW_THRESH = 25.0    # lower threshold → exits turn-speed mode sooner, ramps to cruise faster
-
-# Arrival
-WAYPOINT_TOLERANCE = 2.0   # metres — physics overshoots slightly; dock pairs need reliable triggers
-
-# Obstacle avoidance (Phase 4) — set True once obstacle_avoidance.py is implemented
-OBSTACLE_AVOIDANCE_ENABLED = False
-
-# Physics settling frames after timeline.play()
-PHYSICS_SETTLE_FRAMES = 30  # increased — gives physics time to stabilise before drive kicks in
+SWIVEL_PRIM_PATH = "/World/forklift_b/back_wheel_swivel"
+BODY_PRIM_PATH   = "/World/forklift_b/body"
+DIAG_LOG = (
+    "/isaac-sim/.local/share/ov/data/nvidia-digital-twin-pilot/"
+    "simulations/forklift-warehouse/04_current_outputs/forklift_diag.txt"
+)
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _get_body_pose(body_prim) -> tuple[float, float, float]:
-    """Return (world_x, world_y, heading_deg) from the chassis rigid body transform."""
-    mat = UsdGeom.Xformable(body_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-    pos = mat.ExtractTranslation()
-    # Forward direction: local +X axis in world space
-    fwd = mat.TransformDir(Gf.Vec3d(1, 0, 0))
-    heading = math.degrees(math.atan2(float(fwd[1]), float(fwd[0])))
-    return float(pos[0]), float(pos[1]), heading
+def _world_yaw_deg(prim) -> float:
+    """Return the world-space Z-rotation (yaw) of a prim in degrees."""
+    m = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    q = m.ExtractRotationQuat()
+    x, y, z = q.GetImaginary()
+    w = q.GetReal()
+    return math.degrees(math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
 
 
-def _set_drive(drive_api: UsdPhysics.DriveAPI, velocity: float) -> None:
-    """Set target velocity (deg/s) on the drive wheel joint."""
-    drive_api.GetTargetVelocityAttr().Set(velocity)
-
-
-def _set_steer(steer_api: UsdPhysics.DriveAPI, angle: float) -> None:
-    """Set target position (deg) on the steer joint."""
-    steer_api.GetTargetPositionAttr().Set(angle)
-
-
-def _angle_diff(target: float, current: float) -> float:
-    """Shortest signed angular difference in degrees, range [-180, 180]."""
-    return (target - current + 180) % 360 - 180
-
-
-# ── Main controller loop ──────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 async def run_forklift() -> None:
     app   = omni.kit.app.get_app()
     stage = omni.usd.get_context().get_stage()
 
-    body_prim   = stage.GetPrimAtPath(BODY_PRIM_PATH)
     drive_joint = stage.GetPrimAtPath(DRIVE_JOINT_PATH)
     steer_joint = stage.GetPrimAtPath(STEER_JOINT_PATH)
 
-    if not body_prim.IsValid():
-        raise RuntimeError(f"Body prim not found: {BODY_PRIM_PATH!r}")
     if not drive_joint.IsValid():
         raise RuntimeError(f"Drive joint not found: {DRIVE_JOINT_PATH!r}")
     if not steer_joint.IsValid():
         raise RuntimeError(f"Steer joint not found: {STEER_JOINT_PATH!r}")
 
     drive_api = UsdPhysics.DriveAPI(drive_joint, "angular")
-    steer_api  = UsdPhysics.DriveAPI(steer_joint, "angular")
-    # Lower stiffness so the joint glides to the target instead of snapping.
-    # Default stiffness (100000) causes ringing at the joint's natural frequency
-    # regardless of software-side filtering.
-    steer_api.GetStiffnessAttr().Set(STEER_JOINT_STIFFNESS)
-    steer_api.GetDampingAttr().Set(STEER_JOINT_DAMPING)
+    steer_api = UsdPhysics.DriveAPI(steer_joint, "angular")
+
+    swivel_prim = stage.GetPrimAtPath(SWIVEL_PRIM_PATH)
+    body_prim   = stage.GetPrimAtPath(BODY_PRIM_PATH)
+
+    # Zero drive velocity in USD before play — prevents leftover -2000 torque spike at t=0
+    drive_api.GetTargetVelocityAttr().Set(0.0)
+
+    # Steer: high stiffness during settle snaps wheel to 0° regardless of stored angle.
+    steer_api.GetTargetPositionAttr().Set(0.0)
+    steer_api.GetStiffnessAttr().Set(STEER_STIFFNESS_SETTLE)
+    steer_api.GetDampingAttr().Set(STEER_DAMPING)
 
     timeline = omni.timeline.get_timeline_interface()
     if not timeline.is_playing():
         timeline.play()
-        # Zero the steer joint first so it doesn't lurch from a leftover angle
-        _set_steer(steer_api, 0.0)
-        _set_drive(drive_api, 0.0)
-        for _ in range(PHYSICS_SETTLE_FRAMES):
-            await app.next_update_async()
 
-    carb.log_info("[forklift_controller] Starting physics patrol route (infinite loop)")
+    # Hold still while physics settles — high stiffness snaps wheel straight in this window
+    for _ in range(SETTLE_FRAMES):
+        steer_api.GetTargetPositionAttr().Set(0.0)
+        await app.next_update_async()
 
-    waypoint_index = 0
-    lap = 0
-    smooth_heading = None  # initialised on first frame
-    _dbg_frame = 0         # debug log counter
-    _drive_scale = 0.0     # 0→1.0 ramp — prevents hard launch jerk
+    # Switch to gentle stiffness for driving (reduces oscillation while moving)
+    steer_api.GetStiffnessAttr().Set(STEER_STIFFNESS_DRIVE)
+
+    # Open diag log (overwrite on each run)
+    os.makedirs(os.path.dirname(DIAG_LOG), exist_ok=True)
+    diag_file = open(DIAG_LOG, "w", buffering=1)  # line-buffered so tail -f works
+    diag_file.write("frame, body_yaw, swivel_yaw, steer_angle\n")
+
+    carb.log_info(f"[forklift] GO — ramping to {DRIVE_VELOCITY} deg/s over {RAMP_FRAMES} frames")
+
+    frame = 0
     while True:
-        # ── Respect timeline stop ─────────────────────────────────────────────
         if not timeline.is_playing():
-            _set_drive(drive_api, 0.0)   # brake
+            drive_api.GetTargetVelocityAttr().Set(0.0)
+            diag_file.flush()
             await app.next_update_async()
             continue
 
-        wx, wy = WAYPOINTS[waypoint_index]
-        cx, cy, raw_heading = _get_body_pose(body_prim)
+        # Ramp up from 0 → DRIVE_VELOCITY over RAMP_FRAMES to avoid torque spike
+        scale = min(1.0, frame / RAMP_FRAMES)
+        drive_api.GetTargetVelocityAttr().Set(DRIVE_VELOCITY * scale)
+        steer_api.GetTargetPositionAttr().Set(0.0)  # position mode: steer straight
 
-        # Smooth the heading reading to suppress physics micro-bounce noise.
-        # Handles wraparound correctly via _angle_diff.
-        if smooth_heading is None:
-            smooth_heading = raw_heading
-        else:
-            smooth_heading += _angle_diff(raw_heading, smooth_heading) * HEADING_SMOOTH
-
-        dx = wx - cx
-        dy = wy - cy
-        dist = math.hypot(dx, dy)
-
-        # ── Arrived ───────────────────────────────────────────────────────────
-        if dist <= WAYPOINT_TOLERANCE:
-            next_index = (waypoint_index + 1) % len(WAYPOINTS)
-            if next_index == 0:
-                lap += 1
-                carb.log_info(f"[forklift_controller] Lap {lap} complete — restarting route")
-            else:
-                carb.log_info(
-                    f"[forklift_controller] Lap {lap} waypoint {waypoint_index} "
-                    f"reached: ({wx}, {wy})"
-                )
-            waypoint_index = next_index
-            _set_drive(drive_api, 0.0)   # coast through waypoint
-            _set_steer(steer_api, 0.0)   # straighten wheels
-            await app.next_update_async()
-            continue
-
-        # ── Heading error ─────────────────────────────────────────────────────
-        target_heading = math.degrees(math.atan2(dy, dx))
-        heading_error  = _angle_diff(target_heading, smooth_heading)
-
-        # ── Variable speed ────────────────────────────────────────────────────
-        # If badly misaligned, almost stop so angular momentum can't overshoot.
-        if abs(heading_error) > BRAKE_HEADING:
-            speed = DRIVE_VEL_MIN
-        else:
-            proximity_t = min(1.0, dist / SLOW_ZONE)
-            turn_t      = max(0.0, 1.0 - abs(heading_error) / TURN_SLOW_THRESH)
-            vel_ceiling = DRIVE_VEL_TURN + (DRIVE_VEL_MAX - DRIVE_VEL_TURN) * turn_t
-            speed       = DRIVE_VEL_MIN + (vel_ceiling - DRIVE_VEL_MIN) * proximity_t
-            speed       = max(DRIVE_VEL_MIN, speed)
-
-        # ── Steering (pure P — joint physics handles smoothing via low stiffness) ──
-        if abs(heading_error) < STEER_DEADBAND:
-            steer_angle = 0.0
-        else:
-            raw_steer   = heading_error * STEER_KP
-            speed_ratio = min(1.0, speed / DRIVE_VEL_MAX)
-            dynamic_max = STEER_MAX * (1.0 - 0.55 * speed_ratio)
-            steer_angle = max(-dynamic_max, min(dynamic_max, raw_steer))
-
-        # ── Obstacle avoidance hook (Phase 4) ──────────────────────────────────
-        if OBSTACLE_AVOIDANCE_ENABLED:
-            from obstacle_avoidance import is_path_blocked  # noqa: PLC0415
-            if is_path_blocked():
-                _set_drive(drive_api, 0.0)
-                await app.next_update_async()
-                continue
-
-        _set_drive(drive_api, speed * _drive_scale * DRIVE_DIRECTION)
-        _set_steer(steer_api, steer_angle * STEER_DIRECTION)
-
-        # Ramp drive scale up toward 1.0 over ACCEL_RAMP_FRAMES
-        _drive_scale = min(1.0, _drive_scale + 1.0 / ACCEL_RAMP_FRAMES)
-
-        # Debug: log every 30 frames to expose drift during straight driving
-        _dbg_frame += 1
-        if _dbg_frame % 30 == 0:
-            carb.log_info(
-                f"[forklift_ctrl] hdg={smooth_heading:.1f}° "
-                f"err={heading_error:.2f}° "
-                f"steer={steer_angle:.2f}° "
-                f"spd={speed:.0f} dist={dist:.1f}m"
+        # Diagnostic every 30 frames: straight = steer_angle -90°, so deviation = steer_angle + 90°
+        if frame % 30 == 0 and swivel_prim.IsValid() and body_prim.IsValid():
+            swivel_yaw  = _world_yaw_deg(swivel_prim)
+            body_yaw    = _world_yaw_deg(body_prim)
+            steer_angle = swivel_yaw - body_yaw
+            deviation   = steer_angle + 90.0  # 0° = perfectly straight
+            msg = (
+                f"frame={frame:4d}  "
+                f"body_yaw={body_yaw:7.2f}°  "
+                f"steer_angle={steer_angle:6.2f}°  "
+                f"deviation_from_straight={deviation:+.2f}°"
             )
+            carb.log_warn(f"[forklift diag] {msg}")
+            diag_file.write(msg + "\n")
 
+        frame += 1
         await app.next_update_async()
 
 
-# Cancel any previously running forklift task before starting a new one.
+# ── Task management ───────────────────────────────────────────────────────────
+
 _TASK_KEY = "_forklift_controller_task"
 _existing = getattr(asyncio.get_event_loop(), _TASK_KEY, None)
 if _existing and not _existing.done():
@@ -260,4 +144,3 @@ if _existing and not _existing.done():
 
 _task = asyncio.ensure_future(run_forklift())
 setattr(asyncio.get_event_loop(), _TASK_KEY, _task)
-
