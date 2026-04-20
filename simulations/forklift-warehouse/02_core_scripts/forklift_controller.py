@@ -59,29 +59,32 @@ FLOOR_Z = -0.0002
 #   Warehouse: X(-36.73 → 35.72), Y(-54.84 → 61.78)  — 72 × 117 m
 #   Navigable: X(-34.716 → 33.709), Y(-53.770 → 60.718)
 WAYPOINTS: list[tuple[float, float]] = [
-    (-29.09,  -17.48),   # start — forklift rest position (from get_forklift_transform.py)
-    (-33.0,   -52.0),   # lower-left corner
-    (-33.0,    59.0),   # upper-left corner
-    (  0.0,    59.0),   # top-centre cross
-    (  0.0,   -52.0),   # bottom-centre
-    ( 32.0,   -52.0),   # lower-right corner
-    ( 32.0,    59.0),   # upper-right corner
-    # loops back to index 0 — no duplicate needed
+    # Diagnostic route: long straight N↔S with U-turns at each end.
+    # Reveals whether wobble is in straight running or turning.
+    # Once smooth, restore the full serpentine route.
+    (-29.09,  55.0),   # north end — long straight from start
+    (-29.09, -52.0),   # south end — U-turn, long straight back
+    # loops back to index 0
 ]
 
 # Drive: target velocity on back_wheel_drive joint (degrees/second, angular)
 # DRIVE_DIRECTION: 1.0 = forward, -1.0 = forward is the other way.
 DRIVE_DIRECTION  =  -1.0   # flip if forklift drives backward
 DRIVE_VEL_MAX    =  5000.0  # cruise speed magnitude (deg/s) — straight-line speed
-DRIVE_VEL_TURN   =  700.0  # speed magnitude while turning (heading error > TURN_SLOW_THRESH)
-DRIVE_VEL_MIN    =   300.0  # minimum speed magnitude near waypoints
+DRIVE_VEL_TURN   =   200.0  # speed while actively turning (was 700 — kept low to kill momentum)
+DRIVE_VEL_MIN    =   150.0  # minimum speed magnitude
 SLOW_ZONE        =    6.0   # metres from waypoint at which braking begins
+BRAKE_HEADING    =   30.0   # heading error (°) above which the forklift nearly stops to turn in place
 
 # Steer: target position on back_wheel_swivel joint (degrees)
 # STEER_DIRECTION: 1.0 = normal, -1.0 = flip if forklift steers the wrong way.
 STEER_DIRECTION  =  -1.0   # flip if steering is inverted
-STEER_GAIN       =   1.0   # heading error (°) → steer angle multiplier (always positive)
-STEER_MAX        =  55.0   # clamped inside joint limit of ±60°
+STEER_KP         =   0.30  # P gain: heading error (°) → steer angle
+STEER_MAX        =  30.0   # hard clamp on commanded steer angle
+STEER_DEADBAND   =   8.0   # heading errors below this are ignored
+STEER_JOINT_STIFFNESS = 800.0
+STEER_JOINT_DAMPING   = 3000.0  # higher damping → less joint-level ringing
+HEADING_SMOOTH   =   0.20  # low-pass on heading reading to suppress physics noise
 
 # Heading
 TURN_SLOW_THRESH = 45.0    # heading error (°) above which speed → DRIVE_VEL_TURN
@@ -142,6 +145,11 @@ async def run_forklift() -> None:
 
     drive_api = UsdPhysics.DriveAPI(drive_joint, "angular")
     steer_api  = UsdPhysics.DriveAPI(steer_joint, "angular")
+    # Lower stiffness so the joint glides to the target instead of snapping.
+    # Default stiffness (100000) causes ringing at the joint's natural frequency
+    # regardless of software-side filtering.
+    steer_api.GetStiffnessAttr().Set(STEER_JOINT_STIFFNESS)
+    steer_api.GetDampingAttr().Set(STEER_JOINT_DAMPING)
 
     timeline = omni.timeline.get_timeline_interface()
     if not timeline.is_playing():
@@ -153,6 +161,7 @@ async def run_forklift() -> None:
 
     waypoint_index = 0
     lap = 0
+    smooth_heading     = None  # initialised on first frame
 
     while True:
         # ── Respect timeline stop ─────────────────────────────────────────────
@@ -162,7 +171,14 @@ async def run_forklift() -> None:
             continue
 
         wx, wy = WAYPOINTS[waypoint_index]
-        cx, cy, current_heading = _get_body_pose(body_prim)
+        cx, cy, raw_heading = _get_body_pose(body_prim)
+
+        # Smooth the heading reading to suppress physics micro-bounce noise.
+        # Handles wraparound correctly via _angle_diff.
+        if smooth_heading is None:
+            smooth_heading = raw_heading
+        else:
+            smooth_heading += _angle_diff(raw_heading, smooth_heading) * HEADING_SMOOTH
 
         dx = wx - cx
         dy = wy - cy
@@ -185,20 +201,29 @@ async def run_forklift() -> None:
             await app.next_update_async()
             continue
 
-        # ── Heading and steering ──────────────────────────────────────────────
+        # ── Heading error ─────────────────────────────────────────────────────
         target_heading = math.degrees(math.atan2(dy, dx))
-        heading_error  = _angle_diff(target_heading, current_heading)
-
-        steer_angle = max(-STEER_MAX, min(STEER_MAX, heading_error * STEER_GAIN))
-        _set_steer(steer_api, steer_angle)
+        heading_error  = _angle_diff(target_heading, smooth_heading)
 
         # ── Variable speed ────────────────────────────────────────────────────
-        proximity_t = min(1.0, dist / SLOW_ZONE)
-        # Blend between DRIVE_VEL_TURN (full turn) and DRIVE_VEL_MAX (straight)
-        turn_t      = max(0.0, 1.0 - abs(heading_error) / TURN_SLOW_THRESH)
-        vel_ceiling = DRIVE_VEL_TURN + (DRIVE_VEL_MAX - DRIVE_VEL_TURN) * turn_t
-        speed       = DRIVE_VEL_MIN + (vel_ceiling - DRIVE_VEL_MIN) * proximity_t
-        speed       = max(DRIVE_VEL_MIN, speed)  # always positive magnitude
+        # If badly misaligned, almost stop so angular momentum can't overshoot.
+        if abs(heading_error) > BRAKE_HEADING:
+            speed = DRIVE_VEL_MIN
+        else:
+            proximity_t = min(1.0, dist / SLOW_ZONE)
+            turn_t      = max(0.0, 1.0 - abs(heading_error) / TURN_SLOW_THRESH)
+            vel_ceiling = DRIVE_VEL_TURN + (DRIVE_VEL_MAX - DRIVE_VEL_TURN) * turn_t
+            speed       = DRIVE_VEL_MIN + (vel_ceiling - DRIVE_VEL_MIN) * proximity_t
+            speed       = max(DRIVE_VEL_MIN, speed)
+
+        # ── Steering (pure P — joint physics handles smoothing via low stiffness) ──
+        if abs(heading_error) < STEER_DEADBAND:
+            steer_angle = 0.0
+        else:
+            raw_steer   = heading_error * STEER_KP
+            speed_ratio = min(1.0, speed / DRIVE_VEL_MAX)
+            dynamic_max = STEER_MAX * (1.0 - 0.55 * speed_ratio)
+            steer_angle = max(-dynamic_max, min(dynamic_max, raw_steer))
 
         # ── Obstacle avoidance hook (Phase 4) ──────────────────────────────────
         if OBSTACLE_AVOIDANCE_ENABLED:

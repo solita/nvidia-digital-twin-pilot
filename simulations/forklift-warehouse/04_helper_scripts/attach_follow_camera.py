@@ -33,18 +33,18 @@ CAMERAS = [
     },
     {
         "name":     "CamFront",
-        "offset":   Gf.Vec3d( 10.0,  0.0,  5.0),   # in front + above
+        "offset":   Gf.Vec3d(  4.0,  0.0,  4.0),   # short offset — +10 clips through warehouse wall at start
         "rotation": Gf.Vec3f(90 - 20, 0.0,  90.0),  # face backward toward forklift
     },
     {
         "name":     "CamLeft",
-        "offset":   Gf.Vec3d(  0.0, 10.0,  5.0),   # left side + above
-        "rotation": Gf.Vec3f(90 - 20, 0.0,   0.0),  # face right toward forklift
+        "offset":   Gf.Vec3d(  0.0,  8.0,  4.0),   # left side + slightly above
+        "rotation": Gf.Vec3f(90 - 15, 0.0, 180.0),  # face right (-Y) toward forklift
     },
     {
         "name":     "CamRight",
-        "offset":   Gf.Vec3d(  0.0,-10.0,  5.0),   # right side + above
-        "rotation": Gf.Vec3f(90 - 20, 0.0, 180.0),  # face left toward forklift
+        "offset":   Gf.Vec3d(  0.0, -8.0,  4.0),   # right side + slightly above
+        "rotation": Gf.Vec3f(90 - 15, 0.0,   0.0),  # face left (+Y) toward forklift — mirror of CamLeft
     },
 ]
 
