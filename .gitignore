@@ -9,6 +9,7 @@ __pycache__/
 # folder, but preserve the .gitkeep placeholder so the directory is tracked.
 simulations/*/04_current_outputs/*
 !simulations/*/04_current_outputs/.gitkeep
+warehouse_clean.usd
 
 # ── Windows artifacts ─────────────────────────────────────────────────────────
 desktop.ini
