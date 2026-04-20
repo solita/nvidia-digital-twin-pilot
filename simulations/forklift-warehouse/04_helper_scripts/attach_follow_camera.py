@@ -17,15 +17,18 @@ import omni.usd
 from pxr import Gf, UsdGeom
 
 FORKLIFT_PRIM_PATH  = "/World/forklift_b"
-CAMERA_PRIM_PATH    = "/World/forklift_b/FollowCam"
+CAMERA_PRIM_PATH    = "/World/forklift_b/body/FollowCam"  # parented to the moving rigid body
 
 # Camera offset from forklift centre (metres, in forklift local space)
-OFFSET_X  =  -8.0   # behind the forklift
+OFFSET_X  =  -14.0   # behind the forklift
 OFFSET_Y  =   0.0   # centred left/right
-OFFSET_Z  =   5.0   # above the forklift
+OFFSET_Z  =   8.0   # above the forklift
 
 # Camera tilt — how many degrees to look downward toward the forklift
-TILT_DOWN_DEG = 20.0
+TILT_DOWN_DEG = 25.0
+
+# Old camera path (before fix) — remove if still present
+_OLD_CAMERA_PATH = "/World/forklift_b/FollowCam"
 
 # ── Create or find the camera prim ────────────────────────────────────────────
 stage = omni.usd.get_context().get_stage()
@@ -33,25 +36,31 @@ stage = omni.usd.get_context().get_stage()
 if not stage:
     print("[attach_follow_camera] ERROR: No stage loaded.")
 else:
+    # Remove old camera if it exists
+    old_cam = stage.GetPrimAtPath(_OLD_CAMERA_PATH)
+    if old_cam.IsValid():
+        stage.RemovePrim(_OLD_CAMERA_PATH)
+        print(f"[attach_follow_camera] Removed old camera at {_OLD_CAMERA_PATH}")
+
+    # Always remove and recreate so re-running the script picks up new offset values
     cam_prim = stage.GetPrimAtPath(CAMERA_PRIM_PATH)
-
     if cam_prim.IsValid():
-        print(f"[attach_follow_camera] Camera already exists at {CAMERA_PRIM_PATH}")
-    else:
-        camera = UsdGeom.Camera.Define(stage, CAMERA_PRIM_PATH)
+        stage.RemovePrim(CAMERA_PRIM_PATH)
+        print(f"[attach_follow_camera] Removed existing camera at {CAMERA_PRIM_PATH}")
 
-        xform  = UsdGeom.Xformable(camera.GetPrim())
+    camera = UsdGeom.Camera.Define(stage, CAMERA_PRIM_PATH)
+    xform  = UsdGeom.Xformable(camera.GetPrim())
 
-        # Position offset behind and above the forklift
-        xform.AddTranslateOp().Set(Gf.Vec3d(OFFSET_X, OFFSET_Y, OFFSET_Z))
+    # Position offset behind and above the forklift
+    xform.AddTranslateOp().Set(Gf.Vec3d(OFFSET_X, OFFSET_Y, OFFSET_Z))
 
-        # Tilt down to look at the forklift
-        xform.AddRotateXYZOp().Set(Gf.Vec3f(90.0 - TILT_DOWN_DEG, 0.0, -90.0))
+    # Tilt down to look at the forklift
+    xform.AddRotateXYZOp().Set(Gf.Vec3f(90.0 - TILT_DOWN_DEG, 0.0, -90.0))
 
-        camera.CreateFocalLengthAttr(24.0)    # wider FOV for warehouse overview
-        camera.CreateClippingRangeAttr(Gf.Vec2f(0.1, 10000.0))
+    camera.CreateFocalLengthAttr(24.0)
+    camera.CreateClippingRangeAttr(Gf.Vec2f(0.1, 10000.0))
 
-        print(f"[attach_follow_camera] Created follow camera at {CAMERA_PRIM_PATH}")
+    print(f"[attach_follow_camera] Created follow camera at {CAMERA_PRIM_PATH}")
 
     # ── Switch active viewport to this camera ─────────────────────────────────
     viewport = omni.kit.viewport.utility.get_active_viewport()
