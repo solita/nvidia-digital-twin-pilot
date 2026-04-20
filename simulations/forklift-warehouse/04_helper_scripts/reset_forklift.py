@@ -18,10 +18,13 @@ from pxr import Gf, UsdGeom
 FORKLIFT_PRIM_PATH = "/World/forklift_b"
 
 # Rest position and heading from get_forklift_transform.py
+# REST_HEADING set to 90° (north) to match the straight-line test waypoint
+# so the controller starts with zero initial turn.
+# Change back to 177.39 when restoring the full patrol route.
 REST_X       = -29.090045
 REST_Y       = -17.476563
 REST_Z       =  0.0
-REST_HEADING = 177.39   # degrees (yaw)
+REST_HEADING =  90.0   # face north — aligns with straight-line test waypoint (-29.09, 53.0)
 
 # ── Cancel any running controller task ───────────────────────────────────────
 _TASK_KEY = "_forklift_controller_task"

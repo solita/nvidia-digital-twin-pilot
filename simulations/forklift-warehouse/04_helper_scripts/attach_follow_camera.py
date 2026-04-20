@@ -1,5 +1,4 @@
-"""
-attach_follow_camera.py — Attach 4 follow cameras to the forklift (Back, Front, Left, Right).
+"""attach_follow_camera.py — Attach 5 follow cameras to the forklift (Back, Front, Left, Right, Top).
 
 All cameras are parented to /World/forklift_b/body so they move with the forklift.
 Re-running the script recreates them, so you can tune offsets and re-run freely.
@@ -45,6 +44,11 @@ CAMERAS = [
         "name":     "CamRight",
         "offset":   Gf.Vec3d(  0.0, -8.0,  4.0),   # right side + slightly above
         "rotation": Gf.Vec3f(90 - 15, 0.0,   0.0),  # face left (+Y) toward forklift — mirror of CamLeft
+    },
+    {
+        "name":     "CamTop",
+        "offset":   Gf.Vec3d(  0.0,  0.0, 20.0),   # directly above the forklift
+        "rotation": Gf.Vec3f(  0.0,  0.0,  90.0),  # look straight down (-Z), forklift forward = up in frame
     },
 ]
 
@@ -92,7 +96,7 @@ else:
     if viewport and active_path:
         viewport.camera_path = active_path
         print(f"[attach_follow_camera] Viewport set to {DEFAULT_CAMERA}")
-        print("  → Switch cameras via viewport top-left dropdown: CamBack / CamFront / CamLeft / CamRight")
+        print("  → Switch cameras via viewport top-left dropdown: CamBack / CamFront / CamLeft / CamRight / CamTop")
     else:
         print("[attach_follow_camera] WARNING: Could not switch viewport automatically.")
 

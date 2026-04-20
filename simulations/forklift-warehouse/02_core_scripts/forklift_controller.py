@@ -54,49 +54,45 @@ STEER_JOINT_PATH   = "/World/forklift_b/back_wheel_joints/back_wheel_swivel" # s
 # Floor Z from get_warehouse_spatial_info.py output
 FLOOR_Z = -0.0002
 
-# Serpentine patrol across the scaled warehouse.
-# Navigable bounds from get_warehouse_spatial_info.py (Apr 20 2026):
-#   Warehouse: X(-36.73 → 35.72), Y(-54.84 → 61.78)  — 72 × 117 m
-#   Navigable: X(-34.716 → 33.709), Y(-53.770 → 60.718)
+# Single-waypoint straight-line test.
+# Forklift drives straight north from rest position and stops.
+# Index wraps (0+1)%1 = 0 → holds position once arrived.
+# Restore full route once straight-line physics is confirmed clean.
 WAYPOINTS: list[tuple[float, float]] = [
-    # Diagnostic route: long straight N↔S with U-turns at each end.
-    # Reveals whether wobble is in straight running or turning.
-    # Once smooth, restore the full serpentine route.
-    (-29.09,  55.0),   # north end — long straight from start
-    (-29.09, -52.0),   # south end — U-turn, long straight back
-    # loops back to index 0
+    (-29.09,  53.0),   # due north — same X as start, no turn required
 ]
 
 # Drive: target velocity on back_wheel_drive joint (degrees/second, angular)
 # DRIVE_DIRECTION: 1.0 = forward, -1.0 = forward is the other way.
 DRIVE_DIRECTION  =  -1.0   # flip if forklift drives backward
-DRIVE_VEL_MAX    =  5000.0  # cruise speed magnitude (deg/s) — straight-line speed
-DRIVE_VEL_TURN   =   200.0  # speed while actively turning (was 700 — kept low to kill momentum)
-DRIVE_VEL_MIN    =   150.0  # minimum speed magnitude
+DRIVE_VEL_MAX    =  1800.0  # cruise speed (deg/s) — raised for faster post-turn straight
+DRIVE_VEL_TURN   =   300.0  # speed while turning — raised so exit from turn is snappier
+DRIVE_VEL_MIN    =    60.0  # minimum speed near waypoints
 SLOW_ZONE        =    6.0   # metres from waypoint at which braking begins
-BRAKE_HEADING    =   30.0   # heading error (°) above which the forklift nearly stops to turn in place
+BRAKE_HEADING    =   30.0   # heading error (°) above which forklift nearly stops to turn in place
+ACCEL_RAMP_FRAMES =  120    # frames to ramp from 0 → full speed on startup (~2 s at 60 Hz)
 
 # Steer: target position on back_wheel_swivel joint (degrees)
 # STEER_DIRECTION: 1.0 = normal, -1.0 = flip if forklift steers the wrong way.
 STEER_DIRECTION  =  -1.0   # flip if steering is inverted
 STEER_KP         =   0.30  # P gain: heading error (°) → steer angle
 STEER_MAX        =  30.0   # hard clamp on commanded steer angle
-STEER_DEADBAND   =   8.0   # heading errors below this are ignored
+STEER_DEADBAND   =   2.5   # tighter: catch drift before it becomes visible (was 8°)
 STEER_JOINT_STIFFNESS = 800.0
 STEER_JOINT_DAMPING   = 3000.0  # higher damping → less joint-level ringing
-HEADING_SMOOTH   =   0.20  # low-pass on heading reading to suppress physics noise
+HEADING_SMOOTH   =   0.40  # faster tracking so filtered heading closely follows actual (was 0.20)
 
 # Heading
-TURN_SLOW_THRESH = 45.0    # heading error (°) above which speed → DRIVE_VEL_TURN
+TURN_SLOW_THRESH = 25.0    # lower threshold → exits turn-speed mode sooner, ramps to cruise faster
 
 # Arrival
-WAYPOINT_TOLERANCE = 1.5   # metres — larger than kinematic (physics overshoots slightly)
+WAYPOINT_TOLERANCE = 2.0   # metres — physics overshoots slightly; dock pairs need reliable triggers
 
 # Obstacle avoidance (Phase 4) — set True once obstacle_avoidance.py is implemented
 OBSTACLE_AVOIDANCE_ENABLED = False
 
 # Physics settling frames after timeline.play()
-PHYSICS_SETTLE_FRAMES = 10
+PHYSICS_SETTLE_FRAMES = 30  # increased — gives physics time to stabilise before drive kicks in
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -154,6 +150,9 @@ async def run_forklift() -> None:
     timeline = omni.timeline.get_timeline_interface()
     if not timeline.is_playing():
         timeline.play()
+        # Zero the steer joint first so it doesn't lurch from a leftover angle
+        _set_steer(steer_api, 0.0)
+        _set_drive(drive_api, 0.0)
         for _ in range(PHYSICS_SETTLE_FRAMES):
             await app.next_update_async()
 
@@ -161,8 +160,9 @@ async def run_forklift() -> None:
 
     waypoint_index = 0
     lap = 0
-    smooth_heading     = None  # initialised on first frame
-
+    smooth_heading = None  # initialised on first frame
+    _dbg_frame = 0         # debug log counter
+    _drive_scale = 0.0     # 0→1.0 ramp — prevents hard launch jerk
     while True:
         # ── Respect timeline stop ─────────────────────────────────────────────
         if not timeline.is_playing():
@@ -233,8 +233,22 @@ async def run_forklift() -> None:
                 await app.next_update_async()
                 continue
 
-        _set_drive(drive_api, speed * DRIVE_DIRECTION)
+        _set_drive(drive_api, speed * _drive_scale * DRIVE_DIRECTION)
         _set_steer(steer_api, steer_angle * STEER_DIRECTION)
+
+        # Ramp drive scale up toward 1.0 over ACCEL_RAMP_FRAMES
+        _drive_scale = min(1.0, _drive_scale + 1.0 / ACCEL_RAMP_FRAMES)
+
+        # Debug: log every 30 frames to expose drift during straight driving
+        _dbg_frame += 1
+        if _dbg_frame % 30 == 0:
+            carb.log_info(
+                f"[forklift_ctrl] hdg={smooth_heading:.1f}° "
+                f"err={heading_error:.2f}° "
+                f"steer={steer_angle:.2f}° "
+                f"spd={speed:.0f} dist={dist:.1f}m"
+            )
+
         await app.next_update_async()
 
 
