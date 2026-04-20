@@ -30,7 +30,7 @@ DRIVE_JOINT_PATH = "/World/forklift_b/back_wheel_joints/back_wheel_drive"
 STEER_JOINT_PATH = "/World/forklift_b/back_wheel_joints/back_wheel_swivel"
 FORKLIFT_PRIM    = "/World/forklift_b/body"  # physics rigid body — this is what actually moves
 
-DRIVE_VELOCITY = +200.0   # deg/s wheel spin -- positive = forward/south at heading -90°
+DRIVE_VELOCITY = +400.0   # deg/s wheel spin -- positive = forward/south at heading -90°
 SETTLE_FRAMES  =  60      # physics settle before driving
 RAMP_FRAMES    =  60      # ramp from 0 → full speed to avoid torque spike
 
@@ -61,10 +61,10 @@ HEADING_SMOOTH =   0.40   # EMA factor for heading (0=frozen, 1=raw) — filters
 #
 # REST_HEADING must be -90 deg so DRIVE_VELOCITY=+200 drives straight south to WP0.
 WAYPOINTS = [
-    (-15.0, -33.0),   # WP0: south end        -- actual floor-obstacle boundary is Y=-36.4, 3m buffer
+    (-15.0, -33.0),   # WP0: south end        -- actual south floor boundary ~Y=-36.4, 3m buffer
     ( 20.0, -33.0),   # WP1: south-east       -- east in south cross-aisle
-    ( 20.0,  55.0),   # WP2: north-east       -- north in east aisle
-    (-24.0,  55.0),   # WP3: north-west       -- west in north cross-aisle
+    ( 20.0,  48.0),   # WP2: north-east       -- actual north wall ~Y=52.3, 4m buffer to turn
+    (-24.0,  48.0),   # WP3: north-west       -- west in north cross-aisle
     (-24.0, -33.0),   # WP4: south-west       -- south in west-center aisle
     (-15.0, -17.5),   # WP5: start zone       -- loops back to WP0
 ]
