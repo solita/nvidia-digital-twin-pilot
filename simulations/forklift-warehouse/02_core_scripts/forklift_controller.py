@@ -28,9 +28,9 @@ from pxr import Usd, UsdGeom, UsdPhysics
 
 DRIVE_JOINT_PATH = "/World/forklift_b/back_wheel_joints/back_wheel_drive"
 STEER_JOINT_PATH = "/World/forklift_b/back_wheel_joints/back_wheel_swivel"
-FORKLIFT_PRIM    = "/World/forklift_b"
+FORKLIFT_PRIM    = "/World/forklift_b/body"  # physics rigid body — this is what actually moves
 
-DRIVE_VELOCITY = -200.0   # deg/s wheel spin — negative = forward
+DRIVE_VELOCITY = +200.0   # deg/s wheel spin — positive = forward (north at heading 90°)
 SETTLE_FRAMES  =  60      # physics settle before driving
 RAMP_FRAMES    =  60      # ramp from 0 → full speed to avoid torque spike
 
