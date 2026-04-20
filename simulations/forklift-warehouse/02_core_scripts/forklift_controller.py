@@ -1,12 +1,14 @@
 """
-forklift_controller.py — Bare minimum: drive the forklift straight forward.
+forklift_controller.py — Phase 2: heading-corrected single-waypoint drive.
 
-No waypoints, no steering logic, no heading correction.
-The forklift drives in whatever direction it is currently facing.
-Flip DRIVE_VELOCITY sign if it goes the wrong way.
+The forklift drives toward a single waypoint due north, using a closed-loop
+P controller on steer angle to hold the heading. This validates that heading
+correction works before restoring the full 14-waypoint patrol route.
+
+Waypoint: (-29.09, 53.0) — due north of the rest position (-29.09, -17.48)
+Reset heading to 90° in reset_forklift.py before running.
 
 Run via VS Code: Ctrl+Shift+P → Isaac Sim: Run File Remotely
-Scene must already be open in Isaac Sim (scene_assembly.usd).
 
 Dev owner: Dev 2
 """
@@ -20,40 +22,60 @@ import carb
 import omni.kit.app
 import omni.timeline
 import omni.usd
-from pxr import Gf, Usd, UsdGeom, UsdPhysics
+from pxr import Usd, UsdGeom, UsdPhysics
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
 DRIVE_JOINT_PATH = "/World/forklift_b/back_wheel_joints/back_wheel_drive"
 STEER_JOINT_PATH = "/World/forklift_b/back_wheel_joints/back_wheel_swivel"
+FORKLIFT_PRIM    = "/World/forklift_b"
 
-DRIVE_VELOCITY = -200.0  # deg/s — flip sign if forklift goes backward
-SETTLE_FRAMES  = 60       # frames to hold still before driving starts
-RAMP_FRAMES    = 60       # frames to ramp from 0 → full speed (prevents torque spike)
+DRIVE_VELOCITY = -200.0   # deg/s wheel spin — negative = forward
+SETTLE_FRAMES  =  60      # physics settle before driving
+RAMP_FRAMES    =  60      # ramp from 0 → full speed to avoid torque spike
 
-# Steer joint: position mode targeting 0° (wheel straight).
-# "Straight" = joint angle 0° = world steer_angle -90° (localRot1 offset is intentional).
-# Stiffness must be HIGH enough to resist caster-trail dynamics during motion.
-# The startup torque-spike (old bug) is now gone — drive velocity is zeroed before play.
-STEER_STIFFNESS_SETTLE = 20000.0  # snaps wheel straight during settle (forklift stationary)
-STEER_STIFFNESS_DRIVE  = 40000.0  # strong enough to resist caster drift under load
-STEER_DAMPING          = 10000.0  # damping to prevent oscillation
+# Steer joint physics — values validated in Phase 1
+STEER_STIFFNESS_SETTLE = 20000.0  # snap wheel straight while stationary
+STEER_STIFFNESS_DRIVE  = 40000.0  # resist caster drift under load
+STEER_DAMPING          = 10000.0  # prevent oscillation
 
-SWIVEL_PRIM_PATH = "/World/forklift_b/back_wheel_swivel"
-BODY_PRIM_PATH   = "/World/forklift_b/body"
+# Heading PD controller
+STEER_KP       =   0.30   # proportional gain  (deg steer per deg heading error — scaled to ±60°)
+STEER_KD       =   0.10   # derivative gain    (dampens overshoot)
+STEER_DEADBAND =   2.5    # deg — ignore errors smaller than this (prevents hunting)
+STEER_MAX      =  30.0    # deg — clamp steer command to ±30° for gradual turns
+HEADING_SMOOTH =   0.40   # EMA factor for heading (0=frozen, 1=raw) — filters sensor noise
+
+# Waypoint: due north of start, confirms heading correction.
+# Y=10 is ~27m north — well within the warehouse. Increase once layout is confirmed.
+WAYPOINTS = [
+    (-29.09, 10.0),   # conservative test waypoint — due north of rest position
+]
+ARRIVAL_RADIUS = 3.0   # metres — stop when within this of waypoint
+
 DIAG_LOG = (
     "/isaac-sim/.local/share/ov/data/nvidia-digital-twin-pilot/"
     "simulations/forklift-warehouse/04_current_outputs/forklift_diag.txt"
 )
 
 
-def _world_yaw_deg(prim) -> float:
-    """Return the world-space Z-rotation (yaw) of a prim in degrees."""
-    m = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-    q = m.ExtractRotationQuat()
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _get_world_transform(prim):
+    """Return (x, y, yaw_deg) of a prim in world space."""
+    m   = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    pos = m.ExtractTranslation()
+    q   = m.ExtractRotationQuat()
     x, y, z = q.GetImaginary()
-    w = q.GetReal()
-    return math.degrees(math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
+    w   = q.GetReal()
+    yaw = math.degrees(math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
+    return float(pos[0]), float(pos[1]), yaw
+
+
+def _angle_diff(a: float, b: float) -> float:
+    """Signed shortest-path difference a-b, wrapped to [-180, 180]."""
+    d = (a - b + 180.0) % 360.0 - 180.0
+    return d
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -62,24 +84,24 @@ async def run_forklift() -> None:
     app   = omni.kit.app.get_app()
     stage = omni.usd.get_context().get_stage()
 
-    drive_joint = stage.GetPrimAtPath(DRIVE_JOINT_PATH)
-    steer_joint = stage.GetPrimAtPath(STEER_JOINT_PATH)
+    drive_joint    = stage.GetPrimAtPath(DRIVE_JOINT_PATH)
+    steer_joint    = stage.GetPrimAtPath(STEER_JOINT_PATH)
+    forklift_prim  = stage.GetPrimAtPath(FORKLIFT_PRIM)
 
     if not drive_joint.IsValid():
         raise RuntimeError(f"Drive joint not found: {DRIVE_JOINT_PATH!r}")
     if not steer_joint.IsValid():
         raise RuntimeError(f"Steer joint not found: {STEER_JOINT_PATH!r}")
+    if not forklift_prim.IsValid():
+        raise RuntimeError(f"Forklift prim not found: {FORKLIFT_PRIM!r}")
 
     drive_api = UsdPhysics.DriveAPI(drive_joint, "angular")
     steer_api = UsdPhysics.DriveAPI(steer_joint, "angular")
 
-    swivel_prim = stage.GetPrimAtPath(SWIVEL_PRIM_PATH)
-    body_prim   = stage.GetPrimAtPath(BODY_PRIM_PATH)
-
-    # Zero drive velocity in USD before play — prevents leftover -2000 torque spike at t=0
+    # ── Pre-play: zero drive velocity in USD (prevents leftover torque spike) ──
     drive_api.GetTargetVelocityAttr().Set(0.0)
 
-    # Steer: high stiffness during settle snaps wheel to 0° regardless of stored angle.
+    # ── Pre-play: high steer stiffness — snaps wheel straight before physics runs ──
     steer_api.GetTargetPositionAttr().Set(0.0)
     steer_api.GetStiffnessAttr().Set(STEER_STIFFNESS_SETTLE)
     steer_api.GetDampingAttr().Set(STEER_DAMPING)
@@ -88,51 +110,92 @@ async def run_forklift() -> None:
     if not timeline.is_playing():
         timeline.play()
 
-    # Hold still while physics settles — high stiffness snaps wheel straight in this window
+    # Settle: hold still, wheel snaps straight under high stiffness
     for _ in range(SETTLE_FRAMES):
         steer_api.GetTargetPositionAttr().Set(0.0)
         await app.next_update_async()
 
-    # Switch to gentle stiffness for driving (reduces oscillation while moving)
+    # Switch to drive stiffness
     steer_api.GetStiffnessAttr().Set(STEER_STIFFNESS_DRIVE)
 
-    # Open diag log (overwrite on each run)
+    # ── Init heading state ─────────────────────────────────────────────────────
+    fx, fy, raw_yaw = _get_world_transform(forklift_prim)
+    smooth_heading  = raw_yaw
+    prev_heading_err = 0.0
+
+    # ── Diag log ───────────────────────────────────────────────────────────────
     os.makedirs(os.path.dirname(DIAG_LOG), exist_ok=True)
-    diag_file = open(DIAG_LOG, "w", buffering=1)  # line-buffered so tail -f works
-    diag_file.write("frame, body_yaw, swivel_yaw, steer_angle\n")
+    diag = open(DIAG_LOG, "w", buffering=1)
+    diag.write("frame, fx, fy, heading, target_hdg, err, steer_cmd\n")
 
-    carb.log_info(f"[forklift] GO — ramping to {DRIVE_VELOCITY} deg/s over {RAMP_FRAMES} frames")
+    carb.log_info(f"[forklift] Phase 2 GO — heading-corrected drive toward {WAYPOINTS[0]}")
 
-    frame = 0
-    while True:
+    frame      = 0
+    wp_index   = 0
+
+    while wp_index < len(WAYPOINTS):
         if not timeline.is_playing():
             drive_api.GetTargetVelocityAttr().Set(0.0)
-            diag_file.flush()
+            diag.flush()
             await app.next_update_async()
             continue
 
-        # Ramp up from 0 → DRIVE_VELOCITY over RAMP_FRAMES to avoid torque spike
+        wx, wy = WAYPOINTS[wp_index]
+
+        # ── Forklift world pose ────────────────────────────────────────────────
+        fx, fy, raw_yaw = _get_world_transform(forklift_prim)
+
+        # EMA-smooth heading to filter physics jitter
+        smooth_heading = HEADING_SMOOTH * raw_yaw + (1.0 - HEADING_SMOOTH) * smooth_heading
+
+
+        # ── Arrival check ─────────────────────────────────────────────────────
+        dist = math.hypot(wx - fx, wy - fy)
+        if dist < ARRIVAL_RADIUS:
+            carb.log_info(f"[forklift] Arrived at waypoint {wp_index}: ({wx}, {wy})")
+            wp_index += 1
+            if wp_index >= len(WAYPOINTS):
+                break
+            continue
+
+        # ── Heading error: direction to waypoint vs current heading ───────────
+        target_hdg = math.degrees(math.atan2(wy - fy, wx - fx))
+        heading_err = _angle_diff(target_hdg, smooth_heading)
+
+        # ── PD steer command ──────────────────────────────────────────────────
+        d_err      = heading_err - prev_heading_err
+        steer_cmd  = STEER_KP * heading_err + STEER_KD * d_err
+        steer_cmd  = max(-STEER_MAX, min(STEER_MAX, steer_cmd))
+
+        if abs(heading_err) < STEER_DEADBAND:
+            steer_cmd = 0.0
+
+        prev_heading_err = heading_err
+
+        # ── Drive ─────────────────────────────────────────────────────────────
         scale = min(1.0, frame / RAMP_FRAMES)
         drive_api.GetTargetVelocityAttr().Set(DRIVE_VELOCITY * scale)
-        steer_api.GetTargetPositionAttr().Set(0.0)  # position mode: steer straight
+        steer_api.GetTargetPositionAttr().Set(steer_cmd)
 
-        # Diagnostic every 30 frames: straight = steer_angle -90°, so deviation = steer_angle + 90°
-        if frame % 30 == 0 and swivel_prim.IsValid() and body_prim.IsValid():
-            swivel_yaw  = _world_yaw_deg(swivel_prim)
-            body_yaw    = _world_yaw_deg(body_prim)
-            steer_angle = swivel_yaw - body_yaw
-            deviation   = steer_angle + 90.0  # 0° = perfectly straight
+        # ── Diag every 30 frames ──────────────────────────────────────────────
+        if frame % 30 == 0:
             msg = (
-                f"frame={frame:4d}  "
-                f"body_yaw={body_yaw:7.2f}°  "
-                f"steer_angle={steer_angle:6.2f}°  "
-                f"deviation_from_straight={deviation:+.2f}°"
+                f"frame={frame:4d}  pos=({fx:.1f},{fy:.1f})  "
+                f"hdg={smooth_heading:.1f}°  target={target_hdg:.1f}°  "
+                f"err={heading_err:+.1f}°  steer={steer_cmd:+.1f}°  dist={dist:.1f}m"
             )
-            carb.log_warn(f"[forklift diag] {msg}")
-            diag_file.write(msg + "\n")
+            carb.log_info(f"[forklift] {msg}")
+            diag.write(msg + "\n")
 
         frame += 1
         await app.next_update_async()
+
+    # ── Arrived — stop ────────────────────────────────────────────────────────
+    drive_api.GetTargetVelocityAttr().Set(0.0)
+    steer_api.GetTargetPositionAttr().Set(0.0)
+    diag.write("ARRIVED — controller stopped\n")
+    diag.close()
+    carb.log_info("[forklift] All waypoints reached. Stopped.")
 
 
 # ── Task management ───────────────────────────────────────────────────────────
