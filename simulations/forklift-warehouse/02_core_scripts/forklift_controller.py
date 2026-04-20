@@ -15,14 +15,12 @@ Movement model:
   - Obstacle avoidance hook: set OBSTACLE_AVOIDANCE_ENABLED = True once
     obstacle_avoidance.py is implemented (Phase 4).
 
-Spatial data (from helper scripts):
-  Warehouse navigable bounds: X(-10.49 → 9.48), Y(-17.69 → 18.99)
-  Floor Z: 0.0
-  Forklift size: 3.03 m (X) × 1.13 m (Y) × 2.94 m (Z)
-  Forklift pivot: offset ~0.63 m behind geometric centre on X axis
-
-NOTE: After scaling the warehouse (Phase 2), re-run get_warehouse_spatial_info.py
-and update WAYPOINTS + navigable bounds comment above.
+Spatial data (from get_warehouse_spatial_info.py — Apr 20 2026):
+  Warehouse size:    72.46 m (X) × 116.62 m (Y) × 29.48 m (Z)
+  Navigable bounds:  X(-34.716 → 33.709), Y(-53.770 → 60.718)
+  Floor Z:           -0.0002
+  Forklift size:     3.03 m (X) × 1.13 m (Y) × 2.94 m (Z)
+  Forklift pivot:    offset ~0.63 m behind geometric centre on X axis
 
 Run via VS Code: open this file and press Ctrl+Shift+P → Isaac Sim: Run File Remotely
 Scene must already be open in Isaac Sim (scene_assembly.usd).
@@ -44,26 +42,27 @@ from pxr import Gf, UsdGeom
 FORKLIFT_PRIM_PATH = "/World/forklift_b"
 
 # Floor Z from get_warehouse_spatial_info.py output
-FLOOR_Z = 0.0
+FLOOR_Z = -0.0002
 
-# Serpentine patrol: left aisle north, cross top, right aisle south, loop.
-# Navigable bounds: X(-10.49 → 9.48), Y(-17.69 → 18.99)
-# NOTE: update these after scaling the warehouse (Phase 2).
+# Serpentine patrol across the scaled warehouse.
+# Navigable bounds from get_warehouse_spatial_info.py (Apr 20 2026):
+#   Warehouse: X(-36.73 → 35.72), Y(-54.84 → 61.78)  — 72 × 117 m
+#   Navigable: X(-34.716 → 33.709), Y(-53.770 → 60.718)
 WAYPOINTS: list[tuple[float, float]] = [
-    ( 0.0,   0.0),   # centre of warehouse
-    (-9.0, -16.0),   # lower-left corner
-    (-9.0,  17.0),   # upper-left corner
-    ( 0.0,  17.0),   # top-centre cross
-    ( 0.0, -16.0),   # bottom-centre
-    ( 8.5, -16.0),   # lower-right corner
-    ( 8.5,  17.0),   # upper-right corner
+    (-29.09,  -17.48),   # start — forklift rest position (from get_forklift_transform.py)
+    (-33.0,   -52.0),   # lower-left corner
+    (-33.0,    59.0),   # upper-left corner
+    (  0.0,    59.0),   # top-centre cross
+    (  0.0,   -52.0),   # bottom-centre
+    ( 32.0,   -52.0),   # lower-right corner
+    ( 32.0,    59.0),   # upper-right corner
     # loops back to index 0 — no duplicate needed
 ]
 
 # Speed (metres per simulation step, sim runs ~60 Hz)
-SPEED_MAX          = 0.10   # cruising speed  (~6 m/s at 60 Hz — reduce if too fast)
-SPEED_MIN          = 0.02   # minimum speed when braking / turning
-SLOW_ZONE          = 3.0    # metres from waypoint at which braking begins
+SPEED_MAX          = 0.20   # cruising speed  (~12 m/s at 60 Hz — scaled up for larger warehouse)
+SPEED_MIN          = 0.04   # minimum speed when braking / turning
+SLOW_ZONE          = 6.0    # metres from waypoint at which braking begins
 
 # Heading
 HEADING_SLEW_DEG   = 4.0    # max heading change per step — lower = smoother turns
@@ -144,9 +143,14 @@ async def run_forklift() -> None:
 
     waypoint_index = 0
     lap = 0
-    current_heading = 0.0   # degrees; 0 = facing +X axis (matches forklift rest pose)
+    current_heading = 177.39  # degrees; matches forklift rest pose (from get_forklift_transform.py)
 
     while True:
+        # ── Respect timeline stop ─────────────────────────────────────────────
+        if not timeline.is_playing():
+            await app.next_update_async()
+            continue
+
         wx, wy = WAYPOINTS[waypoint_index]
         cx, cy, _ = _get_position(xform)
 
@@ -202,5 +206,14 @@ async def run_forklift() -> None:
 
 
 import asyncio
-asyncio.ensure_future(run_forklift())
+
+# Cancel any previously running forklift task before starting a new one.
+# This prevents "double controller" if the script is run multiple times.
+_TASK_KEY = "_forklift_controller_task"
+_existing = getattr(asyncio.get_event_loop(), _TASK_KEY, None)
+if _existing and not _existing.done():
+    _existing.cancel()
+
+_task = asyncio.ensure_future(run_forklift())
+setattr(asyncio.get_event_loop(), _TASK_KEY, _task)
 

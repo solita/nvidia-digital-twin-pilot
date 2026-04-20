@@ -12,10 +12,26 @@ Run via VS Code: open this file and press Ctrl+Shift+P → Isaac Sim: Run File R
 Scene must already be open in Isaac Sim (scene_assembly.usd).
 """
 
+import io
 import math
+import os
+import sys
 
 import omni.usd
 from pxr import Gf, UsdGeom, UsdPhysics
+
+OUTPUT_FILE = "/isaac-sim/.local/share/ov/data/nvidia-digital-twin-pilot/simulations/forklift-warehouse/04_current_outputs/forklift_transform_latest.txt"
+
+# Tee stdout to buffer so we can write to file at the end
+_buffer = io.StringIO()
+_orig_stdout = sys.stdout
+
+class _Tee:
+    def __init__(self, *streams): self.streams = streams
+    def write(self, data): [s.write(data) for s in self.streams]
+    def flush(self): [s.flush() for s in self.streams]
+
+sys.stdout = _Tee(_orig_stdout, _buffer)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -123,3 +139,14 @@ for op in xform.GetOrderedXformOps():
     print(f"  {op.GetOpName():<30} precision={op.GetPrecision()}")
 
 print("=" * 60)
+
+# ── Write output to file ──────────────────────────────────────────────────────
+sys.stdout = _orig_stdout
+try:
+    out_path = os.path.normpath(OUTPUT_FILE)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w") as f:
+        f.write(_buffer.getvalue())
+    print(f"\nOutput written to: {out_path}")
+except Exception as e:
+    print(f"WARNING: Could not write output file: {e}")
