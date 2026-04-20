@@ -73,7 +73,7 @@ WAYPOINTS: list[tuple[float, float]] = [
 # DRIVE_DIRECTION: 1.0 = forward, -1.0 = forward is the other way.
 DRIVE_DIRECTION  =  -1.0   # flip if forklift drives backward
 DRIVE_VEL_MAX    =  5000.0  # cruise speed magnitude (deg/s) — straight-line speed
-DRIVE_VEL_TURN   =  1200.0  # speed magnitude while turning (heading error > TURN_SLOW_THRESH)
+DRIVE_VEL_TURN   =  700.0  # speed magnitude while turning (heading error > TURN_SLOW_THRESH)
 DRIVE_VEL_MIN    =   300.0  # minimum speed magnitude near waypoints
 SLOW_ZONE        =    6.0   # metres from waypoint at which braking begins
 
