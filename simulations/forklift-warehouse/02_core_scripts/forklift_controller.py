@@ -85,6 +85,8 @@ LIDAR_DRAW_LINES   = False   # set False to disable viewport ray visualisation
 LIDAR_FORWARD_RAY  = 179    # ray index pointing forward — calibrated from live diag (cube ahead → ray 179)
 LIDAR_CONE_HALF    = 20     # half-width of forward detection cone in rays (degrees) — narrow to avoid self-hits during turns
 LIDAR_MIN_VALID    = 2.80   # metres — software floor for FORWARD cone (mast tip reads up to 2.72m with physics jitter)
+LIDAR_MIN_HIT_COUNT = 4    # minimum rays in forward cone that must read below STOP_DIST to confirm a real obstacle
+                           # mast shadow = 1-3 rays (narrow strut); a 1m cube at 5m = ~11 rays
 LIDAR_REPULSE_GAIN  = 10.0  # deg·m — lateral repulsion gain for 1/d formula (K/d per sector)
 LIDAR_REPULSE_RANGE =  3.5  # m — max distance at which a sector obstacle contributes repulsion (shorter = less wall interference with PD heading correction)
 LIDAR_REPULSE_ARC   =  130  # deg — ±arc from forward scanned for lateral sectors (excludes directly behind)
@@ -277,14 +279,17 @@ async def run_forklift() -> None:
                     flat = [float(d) for d in depths.flat]
                     n    = len(flat)
 
-                    # Forward cone: minimum range for stop/slow (mast self-hit floor applied)
+                    # Forward cone: minimum range for stop/slow (mast self-hit floor applied).
+                    # Only fire if >= LIDAR_MIN_HIT_COUNT rays agree — filters the narrow mast
+                    # shadow (1-3 rays) while a real obstacle at 5m fills 10+ rays.
                     fwd_hits = [
                         flat[i % n]
                         for i in range(LIDAR_FORWARD_RAY - LIDAR_CONE_HALF,
                                        LIDAR_FORWARD_RAY + LIDAR_CONE_HALF + 1)
                         if math.isfinite(flat[i % n]) and flat[i % n] > LIDAR_MIN_VALID and flat[i % n] < 8.0
                     ]
-                    forward_min = min(fwd_hits) if fwd_hits else 9.9
+                    stop_hits = [d for d in fwd_hits if d < LIDAR_STOP_DIST]
+                    forward_min = min(fwd_hits) if len(stop_hits) >= LIDAR_MIN_HIT_COUNT else 9.9
 
                     # Hysteresis debounce: count up immediately on each STOP frame,
                     # but only count DOWN after 5 consecutive CLEAR frames.
