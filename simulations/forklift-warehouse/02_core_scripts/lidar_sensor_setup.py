@@ -19,13 +19,11 @@
 import asyncio
 import traceback
 
-import carb
-import numpy as np
 import omni.kit.app
 import omni.kit.commands
 import omni.timeline
 import omni.usd
-from pxr import Gf, Usd, UsdGeom
+from pxr import Gf, UsdGeom
 
 # -- Configuration -------------------------------------------------------------
 
@@ -48,9 +46,6 @@ HORIZONTAL_RESOLUTION = 0.4     # degrees per beam
 VERTICAL_RESOLUTION = 4.0       # degrees per beam
 DRAW_LINES = True               # visualise beams (gray = miss, red = hit)
 HIGH_LOD = False                 # high level of detail mode
-
-# Logging
-LOG_INTERVAL_FRAMES = 60        # print summary every ~1 s at 60 Hz
 
 
 # -- Helpers -------------------------------------------------------------------
@@ -148,57 +143,7 @@ async def run_lidar_sensor_setup():
         xformable.AddTranslateOp().Set(LIDAR_POSITION)
         _log(f"Positioned LIDAR at offset {LIDAR_POSITION}")
         await _settle(5)
-
-        # -- 5. Start the simulation -------------------------------------------
-        timeline.play()
-        await _settle(20)
-        _log("Timeline playing")
-
-        # -- 6. Acquire the PhysX lidar sensor interface -----------------------
-        from omni.isaac.range_sensor import _range_sensor
-        lidar_interface = _range_sensor.acquire_lidar_sensor_interface()
-        _log("Acquired LidarSensorInterface")
-
-        # Warm up so physics and sensor pipeline are ready
-        await _settle(30)
-        _log("Entering main loop")
-
-        # -- 7. Main loop: read depth data, log summaries ----------------------
-        frame = 0
-
-        while True:
-            await _settle()
-
-            if not timeline.is_playing():
-                _log("Timeline stopped -- exiting")
-                break
-
-            frame += 1
-
-            # Log early frames for diagnostics, then every LOG_INTERVAL_FRAMES
-            if frame > 5 and frame % LOG_INTERVAL_FRAMES != 0:
-                continue
-
-            # Read linear depth data from the PhysX lidar
-            depth = lidar_interface.get_linear_depth_data(LIDAR_PRIM_PATH)
-
-            if depth is not None:
-                depth_arr = np.asarray(depth).ravel()
-                valid = depth_arr[
-                    np.isfinite(depth_arr) & (depth_arr > 0.0) & (depth_arr <= MAX_RANGE)
-                ]
-
-                if valid.size > 0:
-                    _log(
-                        f"frame={frame} returns={valid.size} "
-                        f"min={float(np.min(valid)):.3f}m "
-                        f"mean={float(np.mean(valid)):.3f}m "
-                        f"max={float(np.max(valid)):.3f}m"
-                    )
-                else:
-                    _log(f"frame={frame} returns=0 (no valid depth data)")
-            else:
-                _log(f"frame={frame} depth=None (sensor not ready)")
+        _log("LiDAR setup complete; created and positioned sensor, leaving timeline stopped")
 
     except Exception:
         _log(f"FATAL ERROR:\n{traceback.format_exc()}")
