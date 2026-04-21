@@ -79,12 +79,13 @@ DIAG_LOG = (
 # ── LIDAR sensor (2D, single horizontal ring) ─────────────────────────────────
 LIDAR_ENABLED      = True
 LIDAR_PRIM_PATH    = "/World/forklift_b/body/lidar"
-LIDAR_STOP_DIST    = 2.0    # metres — stop if obstacle this close in forward 90° cone
+LIDAR_STOP_DIST    = 3.0    # metres — full stop  (must be > min_range=2.3 to leave detection window)
+LIDAR_SLOW_DIST    = 3.5    # metres — slow to half speed when obstacle within this range
 LIDAR_DRAW_LINES   = False   # set False to disable viewport ray visualisation
 LIDAR_FORWARD_RAY  = 179    # ray index pointing forward — calibrated from live diag (cube ahead → ray 179)
-LIDAR_CONE_HALF    = 45     # half-width of forward detection cone in rays (degrees)
-LIDAR_MIN_VALID    = 1.65   # metres — lower filter threshold: excludes self-hits at min_range boundary (1.5m)
-LIDAR_DEBOUNCE_FRAMES = 5   # consecutive frames obstacle must be detected before stopping (filters 1-2 frame self-hits)
+LIDAR_CONE_HALF    = 20     # half-width of forward detection cone in rays (degrees) — narrow to avoid self-hits during turns
+LIDAR_MIN_VALID    = 2.35   # metres — software floor just above min_range (2.3m); excludes all forklift self-hits
+LIDAR_DEBOUNCE_FRAMES = 10  # consecutive frames obstacle must be detected before stopping (filters transient self-hits)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -175,7 +176,7 @@ async def run_forklift() -> None:
             "RangeSensorCreateLidar",
             path="/lidar",                      # relative — will land at LIDAR_PRIM_PATH
             parent="/World/forklift_b/body",    # mounts on rigid body → moves with forklift
-            min_range=1.5,                      # metres — must clear forklift self-geometry (~0.84m)
+            min_range=2.3,                      # metres — forklift mast/self-geometry spans up to ~2.2m; this excludes it at hardware level
             max_range=8.0,                      # metres — detection horizon
             draw_lines=LIDAR_DRAW_LINES,        # coloured rays in viewport
             horizontal_fov=360.0,               # full ring
@@ -204,6 +205,8 @@ async def run_forklift() -> None:
     wp_index   = 0
     lap        = 0
     lidar_trigger_count = 0   # consecutive frames with obstacle in forward cone
+    lidar_stopped       = False  # tracks stop/resume state for change-only logging
+    lidar_min_ahead     = 9.9    # nearest valid forward hit this frame
 
     while True:  # loop forever
         if not timeline.is_playing():
@@ -246,8 +249,10 @@ async def run_forklift() -> None:
 
         prev_heading_err = heading_err
 
-        # ── LIDAR obstacle check (stop-and-wait) ─────────────────────────────
-        obstacle_ahead = False
+        # ── LIDAR obstacle check (slowdown + stop-and-wait) ───────────────────
+        obstacle_ahead  = False
+        lidar_slow      = False
+        lidar_min_ahead = 9.9
         if LIDAR_ENABLED and lidar_if is not None:
             try:
                 depths = lidar_if.get_linear_depth_data(LIDAR_PRIM_PATH)
@@ -264,27 +269,37 @@ async def run_forklift() -> None:
                     # Filter: discard NaN/inf, self-hits at min_range boundary, and max_range (no hit)
                     valid_fwd = [d for d in fwd if math.isfinite(d) and d > LIDAR_MIN_VALID and d < 8.0]
                     if valid_fwd:
-                        min_fwd = min(valid_fwd)
-                        if min_fwd < LIDAR_STOP_DIST:
+                        lidar_min_ahead = min(valid_fwd)
+                        if lidar_min_ahead < LIDAR_STOP_DIST:
                             lidar_trigger_count += 1
                         else:
                             lidar_trigger_count = 0
+                        lidar_slow = (lidar_min_ahead < LIDAR_SLOW_DIST)
                     else:
                         lidar_trigger_count = 0
 
                     if lidar_trigger_count >= LIDAR_DEBOUNCE_FRAMES:
                         obstacle_ahead = True
-                        if frame % 60 == 0:
-                            _log("warn", f"LIDAR STOP — obstacle {min(valid_fwd):.2f}m ahead", diag)
             except Exception as exc:
                 _log("warn", f"LIDAR read error: {exc}", diag)
 
+        # ── LIDAR state-change logging (only on transitions) ──────────────────
+        if obstacle_ahead and not lidar_stopped:
+            _log("warn", f"LIDAR STOP — obstacle {lidar_min_ahead:.2f}m ahead", diag)
+            lidar_stopped = True
+        elif not obstacle_ahead and lidar_stopped:
+            _log("info", f"LIDAR RESUME — path clear (nearest: {lidar_min_ahead:.2f}m)", diag)
+            lidar_stopped = False
+
         # ── Drive ─────────────────────────────────────────────────────────────
         if obstacle_ahead:
-            drive_api.GetTargetVelocityAttr().Set(0.0)
+            target_vel = 0.0                          # full stop
+        elif lidar_slow:
+            target_vel = DRIVE_VELOCITY * 0.5         # half speed in slow zone
         else:
-            scale = min(1.0, frame / RAMP_FRAMES)
-            drive_api.GetTargetVelocityAttr().Set(DRIVE_VELOCITY * scale)
+            scale      = min(1.0, frame / RAMP_FRAMES)
+            target_vel = DRIVE_VELOCITY * scale       # full speed
+        drive_api.GetTargetVelocityAttr().Set(target_vel)
         steer_api.GetTargetPositionAttr().Set(-steer_cmd)  # negated: joint localRot1 90° offset inverts steer direction
 
         # ── Diag every 60 frames ──────────────────────────────────────────────
@@ -294,7 +309,7 @@ async def run_forklift() -> None:
                 f"hdg={smooth_heading:.1f}  target={target_hdg:.1f}  "
                 f"err={heading_err:+.1f}  steer={steer_cmd:+.1f}  "
                 f"dist={dist:.1f}m  wp={wp_index}  lap={lap}"
-                + ("  LIDAR_STOP" if obstacle_ahead else "")
+                + ("  LIDAR_STOP" if obstacle_ahead else ("  LIDAR_SLOW" if lidar_slow else ""))
             )
             _log("info", msg)
             diag.write(msg + "\n")
