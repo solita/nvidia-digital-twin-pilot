@@ -79,20 +79,21 @@ DIAG_LOG = (
 # ── LIDAR sensor (2D, single horizontal ring) ─────────────────────────────────
 LIDAR_ENABLED      = True
 LIDAR_PRIM_PATH    = "/World/forklift_b/body/lidar"
-LIDAR_STOP_DIST    = 3.0    # metres — full stop  (must be > min_range=2.3 to leave detection window)
-LIDAR_SLOW_DIST    = 3.5    # metres — slow to half speed when obstacle within this range
+LIDAR_STOP_DIST    = 4.5    # metres — debounced forward stop (wider margin above 2.35m mast noise floor)
+LIDAR_SLOW_DIST    = 5.5    # metres — slow to half speed when obstacle within this range
 LIDAR_DRAW_LINES   = False   # set False to disable viewport ray visualisation
 LIDAR_FORWARD_RAY  = 179    # ray index pointing forward — calibrated from live diag (cube ahead → ray 179)
 LIDAR_CONE_HALF    = 20     # half-width of forward detection cone in rays (degrees) — narrow to avoid self-hits during turns
-LIDAR_MIN_VALID    = 2.35   # metres — software floor for FORWARD cone only (forklift mast extends ~2.2m ahead)
-LIDAR_DEBOUNCE_FRAMES = 10  # consecutive frames obstacle must be detected before stopping (filters transient self-hits)
-LIDAR_CENTER_HALF     = 7   # rays — ±7° centre sub-sector (pure-ahead zone for avoidance sector split)
-LIDAR_AVOID_STEER     = 22.0  # deg — steer angle applied while laterally avoiding an obstacle
-LIDAR_AVOID_SPEED     = 0.35  # fraction of DRIVE_VELOCITY while actively manoeuvring around obstacle
-LIDAR_AVOID_MARGIN    = 0.5   # metres — one side must be this much clearer than the other to choose avoidance over full stop
-LIDAR_AVOID_HOLD_FRAMES = 20  # consecutive clear frames after body has passed before resuming (oscillation damper)
-LIDAR_AVOID_TURN_INHIBIT = 25.0  # deg — suppress avoidance trigger when heading error exceeds this (FL is navigating a waypoint turn, not approaching an obstacle)
-FORKLIFT_BODY_HALF_LENGTH = 1.8  # metres — half forklift length from body-centre; avoidance holds until obstacle projects this far behind
+LIDAR_MIN_VALID    = 2.55   # metres — software floor for FORWARD cone only (mast tip ~2.2m; 2.55 safely excludes jitter)
+LIDAR_REPULSE_GAIN  = 10.0  # deg·m — lateral repulsion gain for 1/d formula (K/d per sector)
+LIDAR_REPULSE_RANGE =  3.5  # m — max distance at which a sector obstacle contributes repulsion (shorter = less wall interference with PD heading correction)
+LIDAR_REPULSE_ARC   =  130  # deg — ±arc from forward scanned for lateral sectors (excludes directly behind)
+LIDAR_AVOID_STEER   =  20.0 # deg — open-side directional bias applied when forward stop is confirmed
+LIDAR_FWDSTOP_SPEED =  0.25 # fraction of DRIVE_VELOCITY while forward obstacle < LIDAR_STOP_DIST
+LIDAR_DEBOUNCE_FRAMES = 5   # consecutive frames forward obstacle must persist before triggering STOP
+STUCK_CHECK_FRAMES  =  180  # frames with no movement → trigger escape maneuver
+STUCK_ESCAPE_FRAMES =   60  # frames of forced full-speed + max-steer escape
+STUCK_MIN_MOVE      =  0.10 # m — minimum displacement per STUCK_CHECK_FRAMES to reset counter
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -211,14 +212,16 @@ async def run_forklift() -> None:
     frame      = 0
     wp_index   = 0
     lap        = 0
-    lidar_trigger_count = 0      # consecutive frames with obstacle in forward cone
-    lidar_clear_count   = 0      # consecutive frames body has been clear (exit-side debounce)
-    lidar_stopped       = False   # True while in full-stop state (transition logging)
-    lidar_avoiding      = False   # True while in active avoidance maneuver (transition logging)
-    avoid_dir           = None    # 'left' or 'right' — avoidance steer direction; persists until body clears
-    obstacle_world_pos  = None    # (x, y) world position of obstacle recorded when avoidance starts
-    obs_along           = 0.0     # projection of obstacle onto forklift forward axis (negative = behind FL)
-    lidar_min_ahead     = 9.9     # nearest valid forward hit this frame
+    forward_min            = 9.9   # nearest validated forward-cone hit this frame
+    repulsion_steer        = 0.0   # APF lateral repulsion this frame (deg, added to PD steer)
+    lidar_fwd_stop            = False # forward obstacle confirmed for LIDAR_DEBOUNCE_FRAMES frames
+    lidar_fwd_slow            = False # forward obstacle within LIDAR_SLOW_DIST
+    lidar_fwd_debounce_count  = 0     # rising counter: increments each STOP frame
+    lidar_fwd_clear_count     = 0     # consecutive clear frames (hysteresis for debounce decay)
+    lidar_log_state           = ""    # last logged LIDAR state — for transition-only messages
+    stuck_check_pos           = None  # (x, y) snapshot for stuck detection
+    stuck_frames              = 0     # consecutive frames with no meaningful movement
+    stuck_escape_frames       = 0     # countdown: >0 = executing escape maneuver
 
     while True:  # loop forever
         if not timeline.is_playing():
@@ -261,13 +264,12 @@ async def run_forklift() -> None:
 
         prev_heading_err = heading_err
 
-        # ── LIDAR obstacle check with sector-aware avoidance ──────────────────
-        obstacle_ahead  = False
-        avoid_active    = False
-        lidar_slow      = False
-        lidar_min_ahead = 9.9
-        left_min = center_min = right_min = 9.9
-        obs_along = 0.0
+        # ── LIDAR: forward stop/slow + APF repulsion steer ───────────────────
+        lidar_fwd_stop  = False
+        lidar_fwd_slow  = False
+        repulsion_steer = 0.0
+        forward_min     = 9.9
+
         if LIDAR_ENABLED and lidar_if is not None:
             try:
                 depths = lidar_if.get_linear_depth_data(LIDAR_PRIM_PATH)
@@ -275,114 +277,133 @@ async def run_forklift() -> None:
                     flat = [float(d) for d in depths.flat]
                     n    = len(flat)
 
-                    # Three sub-sectors within the forward cone (indices wrap mod n)
-                    c_lo = LIDAR_FORWARD_RAY - LIDAR_CENTER_HALF   # centre sector
-                    c_hi = LIDAR_FORWARD_RAY + LIDAR_CENTER_HALF
-                    l_lo = LIDAR_FORWARD_RAY - LIDAR_CONE_HALF     # lo-index sector
-                    l_hi = c_lo - 1
-                    r_lo = c_hi + 1                                 # hi-index sector
-                    r_hi = LIDAR_FORWARD_RAY + LIDAR_CONE_HALF
+                    # Forward cone: minimum range for stop/slow (mast self-hit floor applied)
+                    fwd_hits = [
+                        flat[i % n]
+                        for i in range(LIDAR_FORWARD_RAY - LIDAR_CONE_HALF,
+                                       LIDAR_FORWARD_RAY + LIDAR_CONE_HALF + 1)
+                        if math.isfinite(flat[i % n]) and flat[i % n] > LIDAR_MIN_VALID and flat[i % n] < 8.0
+                    ]
+                    forward_min = min(fwd_hits) if fwd_hits else 9.9
 
-                    l_rays = [flat[i % n] for i in range(l_lo, l_hi + 1)]
-                    l_filt = [d for d in l_rays if math.isfinite(d) and d > LIDAR_MIN_VALID and d < 8.0]
-                    left_min = min(l_filt) if l_filt else 9.9
-
-                    c_rays = [flat[i % n] for i in range(c_lo, c_hi + 1)]
-                    c_filt = [d for d in c_rays if math.isfinite(d) and d > LIDAR_MIN_VALID and d < 8.0]
-                    center_min = min(c_filt) if c_filt else 9.9
-
-                    r_rays = [flat[i % n] for i in range(r_lo, r_hi + 1)]
-                    r_filt = [d for d in r_rays if math.isfinite(d) and d > LIDAR_MIN_VALID and d < 8.0]
-                    right_min = min(r_filt) if r_filt else 9.9
-
-                    lidar_min_ahead = min(left_min, center_min, right_min)
-
-                    # Compute how far the tracked obstacle is along the forklift's forward axis
-                    # Negative = obstacle is behind the forklift body centre
-                    if obstacle_world_pos is not None:
-                        _hr   = math.radians(smooth_heading)
-                        _fwd  = (math.cos(_hr), math.sin(_hr))
-                        _to   = (obstacle_world_pos[0] - fx, obstacle_world_pos[1] - fy)
-                        obs_along = _fwd[0]*_to[0] + _fwd[1]*_to[1]
-                    body_cleared = (obs_along < -FORKLIFT_BODY_HALF_LENGTH) or (obstacle_world_pos is None)
-
-                    if lidar_min_ahead < LIDAR_STOP_DIST:
-                        lidar_trigger_count += 1
-                        lidar_clear_count    = 0
+                    # Hysteresis debounce: count up immediately on each STOP frame,
+                    # but only count DOWN after 5 consecutive CLEAR frames.
+                    # Prevents sensor jitter from flapping the control state.
+                    if forward_min < LIDAR_STOP_DIST:
+                        lidar_fwd_debounce_count = min(lidar_fwd_debounce_count + 1, LIDAR_DEBOUNCE_FRAMES)
+                        lidar_fwd_clear_count    = 0
                     else:
-                        lidar_trigger_count  = 0
-                        if body_cleared:
-                            lidar_clear_count += 1
-                            if lidar_clear_count >= LIDAR_AVOID_HOLD_FRAMES:
-                                avoid_dir           = None
-                                obstacle_world_pos  = None
+                        lidar_fwd_clear_count += 1
+                        if lidar_fwd_clear_count >= 5:
+                            lidar_fwd_debounce_count = max(lidar_fwd_debounce_count - 1, 0)
+                    lidar_fwd_stop = (lidar_fwd_debounce_count >= LIDAR_DEBOUNCE_FRAMES)
+                    lidar_fwd_slow = (forward_min < LIDAR_SLOW_DIST)
+
+                    # APF sector repulsion: find the CLOSEST obstacle in the left and right
+                    # lateral hemispheres. Use 1/d per sector (not a per-ray sum) so repulsion
+                    # stays bounded even in a warehouse full of continuous walls.
+                    #
+                    # offset_deg > 0  → obstacle is to FL's RIGHT → push left (reduce steer)
+                    # offset_deg < 0  → obstacle is to FL's LEFT  → push right (increase steer)
+                    left_min_repulse  = 9.9   # closest hit in left-side arc
+                    right_min_repulse = 9.9   # closest hit in right-side arc
+                    for i in range(n):
+                        d = flat[i]
+                        if not math.isfinite(d) or d > LIDAR_REPULSE_RANGE or d < 0.5:
+                            continue
+                        offset_deg = ((i - LIDAR_FORWARD_RAY) + 180) % 360 - 180
+                        # Skip directly ahead (handled by fwd stop) and directly behind
+                        if abs(offset_deg) < 10 or abs(offset_deg) > LIDAR_REPULSE_ARC:
+                            continue
+                        # Mast self-hit floor for near-forward rays
+                        if abs(offset_deg) <= LIDAR_CONE_HALF and d < LIDAR_MIN_VALID:
+                            continue
+                        if offset_deg > 0:
+                            right_min_repulse = min(right_min_repulse, d)
                         else:
-                            lidar_clear_count = 0   # wait for body to pass obstacle before counting down
+                            left_min_repulse  = min(left_min_repulse,  d)
 
-                    lidar_slow = (lidar_min_ahead < LIDAR_SLOW_DIST)
+                    # Net repulsion = push from left obstacle − push from right obstacle
+                    r_left  = (LIDAR_REPULSE_GAIN / left_min_repulse)  if left_min_repulse  < LIDAR_REPULSE_RANGE else 0.0
+                    r_right = (LIDAR_REPULSE_GAIN / right_min_repulse) if right_min_repulse < LIDAR_REPULSE_RANGE else 0.0
+                    repulsion_steer = max(-STEER_MAX, min(STEER_MAX, r_left - r_right))
 
-                    if lidar_trigger_count >= LIDAR_DEBOUNCE_FRAMES and abs(heading_err) < LIDAR_AVOID_TURN_INHIBIT:
-                        # Only trigger avoidance when driving nearly straight — not during waypoint turns
-                        # (during turns the cone sweeps across warehouse structure, causing false triggers)
-                        if avoid_dir is None:
-                            if left_min > right_min + LIDAR_AVOID_MARGIN:
-                                avoid_dir = "left"    # right side blocked → steer left
-                            elif right_min > left_min + LIDAR_AVOID_MARGIN:
-                                avoid_dir = "right"   # left side blocked → steer right
-                            # else: symmetric block → avoid_dir stays None → full stop
+                    # Open-side selection: when forward stop is confirmed, scan the ±25-80°
+                    # lateral arcs to find which side has more clear space and add a strong
+                    # directional bias toward it.  This handles centered obstacles where the
+                    # APF differential repulsion is near zero.
+                    if lidar_fwd_stop:
+                        ro_right = min(
+                            (flat[i % n] for i in range(LIDAR_FORWARD_RAY + 25, LIDAR_FORWARD_RAY + 80)
+                             if math.isfinite(flat[i % n]) and flat[i % n] >= 0.5),
+                            default=9.9
+                        )
+                        ro_left = min(
+                            (flat[i % n] for i in range(LIDAR_FORWARD_RAY - 80, LIDAR_FORWARD_RAY - 25)
+                             if math.isfinite(flat[i % n]) and flat[i % n] >= 0.5),
+                            default=9.9
+                        )
+                        # Positive steer = turn right; pick side with larger minimum (more open)
+                        open_bias = LIDAR_AVOID_STEER if ro_right >= ro_left else -LIDAR_AVOID_STEER
+                        repulsion_steer = max(-STEER_MAX, min(STEER_MAX, repulsion_steer + open_bias))
+                    elif lidar_fwd_debounce_count > 0 and abs(repulsion_steer) < 5.0:
+                        # Early tiebreak during approach (partial debounce, obstacle not yet confirmed)
+                        repulsion_steer = 8.0
 
-                            if avoid_dir is not None:
-                                # Record obstacle world position once (used for body-clearance tracking)
-                                _hr = math.radians(smooth_heading)
-                                obstacle_world_pos = (
-                                    fx + math.cos(_hr) * lidar_min_ahead,
-                                    fy + math.sin(_hr) * lidar_min_ahead,
-                                )
-
-                        if avoid_dir is not None:
-                            avoid_active = True
-                        else:
-                            obstacle_ahead = True     # symmetric block — stop and wait
-
-                    # Keep avoidance alive after obstacle leaves forward cone until body clears
-                    # But not during wide turns — let the PD controller navigate the turn
-                    if avoid_dir is not None and not body_cleared and not avoid_active and abs(heading_err) < LIDAR_AVOID_TURN_INHIBIT:
-                        avoid_active = True
             except Exception as exc:
                 _log("warn", f"LIDAR read error: {exc}", diag)
 
-        # ── LIDAR state-change logging (only on transitions) ──────────────────
-        if obstacle_ahead and not lidar_stopped:
-            _log("warn", f"LIDAR STOP — obstacle {lidar_min_ahead:.2f}m (L={left_min:.1f} C={center_min:.1f} R={right_min:.1f})", diag)
-            lidar_stopped  = True
-            lidar_avoiding = False
-        elif avoid_active and not lidar_avoiding:
-            _log("info", f"LIDAR AVOID {avoid_dir.upper()} — {lidar_min_ahead:.2f}m (L={left_min:.1f} C={center_min:.1f} R={right_min:.1f} along={obs_along:.1f}m)", diag)
-            lidar_avoiding = True
-            lidar_stopped  = False
-        elif not obstacle_ahead and not avoid_active and (lidar_stopped or lidar_avoiding):
-            if lidar_clear_count >= LIDAR_AVOID_HOLD_FRAMES:
-                _log("info", f"LIDAR RESUME — path clear (nearest: {lidar_min_ahead:.2f}m)", diag)
-                lidar_stopped  = False
-                lidar_avoiding = False
+        # ── LIDAR state logging (transition only) ─────────────────────────────
+        new_lidar_state = "STOP" if lidar_fwd_stop else ("SLOW" if lidar_fwd_slow else "")
+        if new_lidar_state != lidar_log_state:
+            if new_lidar_state == "STOP":
+                _log("warn", f"LIDAR FWD STOP — {forward_min:.2f}m  rep={repulsion_steer:+.1f}°", diag)
+            elif new_lidar_state == "" and lidar_log_state:
+                _log("info", f"LIDAR CLEAR — fwd={forward_min:.2f}m", diag)
+            lidar_log_state = new_lidar_state
 
-        # ── Drive ─────────────────────────────────────────────────────────────
-        if obstacle_ahead:
-            target_vel  = 0.0                          # full stop — symmetric block or both sides closed
-            final_steer = steer_cmd
-        elif avoid_active:
-            target_vel  = DRIVE_VELOCITY * LIDAR_AVOID_SPEED
-            # avoid_dir='left'  → steer left  (negative PD convention)
-            # avoid_dir='right' → steer right (positive PD convention)
-            # If avoidance physically steers the wrong way, swap the sign below
-            final_steer = -LIDAR_AVOID_STEER if avoid_dir == "left" else LIDAR_AVOID_STEER
-        elif lidar_slow:
-            target_vel  = DRIVE_VELOCITY * 0.5         # half speed in slow zone
-            final_steer = steer_cmd
+        # ── Drive (APF-blended) ───────────────────────────────────────────────
+        # Stuck detection — halt once on first trigger
+        if stuck_check_pos is None:
+            stuck_check_pos = (fx, fy)
+            stuck_frames    = 0
+        else:
+            moved = math.hypot(fx - stuck_check_pos[0], fy - stuck_check_pos[1])
+            if moved > STUCK_MIN_MOVE:
+                stuck_check_pos = (fx, fy)
+                stuck_frames    = 0
+            else:
+                stuck_frames += 1
+                if stuck_frames == STUCK_CHECK_FRAMES:
+                    _log("warn", f"STUCK — escape maneuver at ({fx:.1f},{fy:.1f}) rep={repulsion_steer:+.1f}°", diag)
+                    stuck_escape_frames = STUCK_ESCAPE_FRAMES
+                    stuck_frames        = 0
+                    stuck_check_pos     = (fx, fy)
+                    diag.flush()
+
+        # Escape maneuver: full-speed + max steer toward open side, ignoring LIDAR slow/stop
+        if stuck_escape_frames > 0:
+            escape_steer = STEER_MAX if repulsion_steer >= 0 else -STEER_MAX
+            drive_api.GetTargetVelocityAttr().Set(DRIVE_VELOCITY)
+            steer_api.GetTargetPositionAttr().Set(-escape_steer)
+            stuck_escape_frames -= 1
+            frame += 1
+            await app.next_update_async()
+            continue
+
+        # APF-blended steer: PD attraction (toward waypoint) + repulsion (all obstacles/walls)
+        apf_steer = max(-STEER_MAX, min(STEER_MAX, steer_cmd + repulsion_steer))
+
+        if lidar_fwd_stop:
+            target_vel  = DRIVE_VELOCITY * LIDAR_FWDSTOP_SPEED  # slow crawl; APF steers around
+            final_steer = apf_steer
+        elif lidar_fwd_slow:
+            target_vel  = DRIVE_VELOCITY * 0.5
+            final_steer = apf_steer
         else:
             scale       = min(1.0, frame / RAMP_FRAMES)
-            target_vel  = DRIVE_VELOCITY * scale       # full speed
-            final_steer = steer_cmd
+            target_vel  = DRIVE_VELOCITY * scale
+            final_steer = apf_steer
         drive_api.GetTargetVelocityAttr().Set(target_vel)
         steer_api.GetTargetPositionAttr().Set(-final_steer)  # negated: joint localRot1 90° offset inverts steer direction
 
@@ -393,7 +414,9 @@ async def run_forklift() -> None:
                 f"hdg={smooth_heading:.1f}  target={target_hdg:.1f}  "
                 f"err={heading_err:+.1f}  steer={steer_cmd:+.1f}  "
                 f"dist={dist:.1f}m  wp={wp_index}  lap={lap}"
-                + ("  LIDAR_STOP" if obstacle_ahead else (f"  LIDAR_AVOID(along={obs_along:.1f}m)" if avoid_active else ("  LIDAR_SLOW" if lidar_slow else "")))
+                + (f"  LIDAR_STOP(fwd={forward_min:.1f}m rep={repulsion_steer:+.0f}°)" if lidar_fwd_stop
+                   else (f"  LIDAR_SLOW(fwd={forward_min:.1f}m rep={repulsion_steer:+.0f}°)" if lidar_fwd_slow
+                   else (f"  APF(rep={repulsion_steer:+.0f}°)" if abs(repulsion_steer) > 2.0 else "")))
             )
             _log("info", msg)
             diag.write(msg + "\n")
