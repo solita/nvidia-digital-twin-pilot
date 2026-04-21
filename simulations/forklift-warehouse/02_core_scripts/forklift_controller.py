@@ -20,6 +20,7 @@ import os
 
 import carb
 import omni.kit.app
+import omni.kit.commands
 import omni.timeline
 import omni.usd
 from pxr import Usd, UsdGeom, UsdPhysics
@@ -75,6 +76,14 @@ DIAG_LOG = (
     "simulations/forklift-warehouse/04_current_outputs/forklift_diag.txt"
 )
 
+# ── LIDAR sensor (2D, single horizontal ring) ─────────────────────────────────
+LIDAR_ENABLED      = True
+LIDAR_PRIM_PATH    = "/World/forklift_b/body/lidar"
+LIDAR_STOP_DIST    = 2.0    # metres — stop if obstacle this close in forward 90° cone
+LIDAR_DRAW_LINES   = False   # set False to disable viewport ray visualisation
+LIDAR_FORWARD_RAY  = 179    # ray index pointing forward — calibrated from live diag (cube ahead → ray 179)
+LIDAR_CONE_HALF    = 45     # half-width of forward detection cone in rays (degrees)
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -93,6 +102,19 @@ def _angle_diff(a: float, b: float) -> float:
     """Signed shortest-path difference a-b, wrapped to [-180, 180]."""
     d = (a - b + 180.0) % 360.0 - 180.0
     return d
+
+
+def _log(level: str, msg: str, diag=None) -> None:
+    """Log to the carb console and, if diag is open, to the diag file."""
+    tagged = f"[forklift] {msg}"
+    if level == "warn":
+        carb.log_warn(tagged)
+    elif level == "error":
+        carb.log_error(tagged)
+    else:
+        carb.log_info(tagged)
+    if diag is not None:
+        diag.write(f"[{level.upper()}] {msg}\n")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -135,17 +157,47 @@ async def run_forklift() -> None:
     # Switch to drive stiffness
     steer_api.GetStiffnessAttr().Set(STEER_STIFFNESS_DRIVE)
 
+    # ── Diag log (opened early so LIDAR startup messages are also captured) ─────
+    os.makedirs(os.path.dirname(DIAG_LOG), exist_ok=True)
+    diag = open(DIAG_LOG, "w", buffering=1)
+    diag.write("frame, fx, fy, heading, target_hdg, err, steer_cmd\n")
+
+    # ── LIDAR: create sensor programmatically, attached to forklift body ───────
+    lidar_if = None
+    if LIDAR_ENABLED:
+        # Remove stale prim from a previous run (script re-runs without full reload)
+        if stage.GetPrimAtPath(LIDAR_PRIM_PATH).IsValid():
+            omni.kit.commands.execute("DeletePrims", paths=[LIDAR_PRIM_PATH])
+            await app.next_update_async()
+
+        omni.kit.commands.execute(
+            "RangeSensorCreateLidar",
+            path="/lidar",                      # relative — will land at LIDAR_PRIM_PATH
+            parent="/World/forklift_b/body",    # mounts on rigid body → moves with forklift
+            min_range=1.5,                      # metres — must clear forklift self-geometry (~0.84m)
+            max_range=8.0,                      # metres — detection horizon
+            draw_lines=LIDAR_DRAW_LINES,        # coloured rays in viewport
+            horizontal_fov=360.0,               # full ring
+            horizontal_resolution=1.0,          # 1 ray per degree → 360 rays total
+            vertical_fov=0.0,                   # 2D single ring
+            rotation_rate=0.0,                  # sync to physics step, not spinning
+        )
+        await app.next_update_async()           # one frame for prim to initialise
+
+        try:
+            from omni.isaac.range_sensor import _range_sensor
+            lidar_if = _range_sensor.acquire_lidar_sensor_interface()
+            _log("info", "LIDAR sensor created and interface acquired", diag)
+        except Exception as exc:
+            _log("warn", f"LIDAR interface unavailable: {exc}", diag)
+            lidar_if = None
+
     # ── Init heading state ─────────────────────────────────────────────────────
     fx, fy, raw_yaw = _get_world_transform(forklift_prim)
     smooth_heading  = raw_yaw
     prev_heading_err = 0.0
 
-    # ── Diag log ───────────────────────────────────────────────────────────────
-    os.makedirs(os.path.dirname(DIAG_LOG), exist_ok=True)
-    diag = open(DIAG_LOG, "w", buffering=1)
-    diag.write("frame, fx, fy, heading, target_hdg, err, steer_cmd\n")
-
-    carb.log_info(f"[forklift] Phase 3 patrol START -- {len(WAYPOINTS)} waypoints, looping forever")
+    _log("info", f"Phase 3 patrol START -- {len(WAYPOINTS)} waypoints, looping forever", diag)
 
     frame      = 0
     wp_index   = 0
@@ -170,12 +222,12 @@ async def run_forklift() -> None:
         # ── Arrival check ─────────────────────────────────────────────────────
         dist = math.hypot(wx - fx, wy - fy)
         if dist < ARRIVAL_RADIUS:
-            carb.log_info(f"[forklift] WP {wp_index} reached: ({wx},{wy})  lap={lap}")
+            _log("info", f"WP {wp_index} reached: ({wx},{wy})  lap={lap}", diag)
             wp_index += 1
             if wp_index >= len(WAYPOINTS):
                 wp_index = 0
                 lap += 1
-                carb.log_info(f"[forklift] Lap {lap} complete -- looping")
+                _log("info", f"Lap {lap} complete -- looping", diag)
             continue
 
         # ── Heading error: direction to waypoint vs current heading ───────────
@@ -192,9 +244,38 @@ async def run_forklift() -> None:
 
         prev_heading_err = heading_err
 
+        # ── LIDAR obstacle check (stop-and-wait) ─────────────────────────────
+        obstacle_ahead = False
+        if LIDAR_ENABLED and lidar_if is not None:
+            try:
+                depths = lidar_if.get_linear_depth_data(LIDAR_PRIM_PATH)
+                if depths is not None and depths.size >= 360:
+                    flat = [float(d) for d in depths.flat]
+                    # Forward cone centred on LIDAR_FORWARD_RAY (calibrated: ray 179 = forklift forward)
+                    # ±LIDAR_CONE_HALF degrees → rays 134-224
+                    lo = LIDAR_FORWARD_RAY - LIDAR_CONE_HALF
+                    hi = LIDAR_FORWARD_RAY + LIDAR_CONE_HALF
+                    if lo >= 0 and hi < len(flat):
+                        fwd = flat[lo:hi + 1]
+                    else:
+                        fwd = [flat[i % len(flat)] for i in range(lo, hi + 1)]
+                    # Filter: discard NaN/inf, near-zero (uninitialized/within min_range), and max_range (no hit)
+                    valid_fwd = [d for d in fwd if math.isfinite(d) and d > 0.1 and d < 8.0]
+                    if valid_fwd:
+                        min_fwd = min(valid_fwd)
+                        if min_fwd < LIDAR_STOP_DIST:
+                            obstacle_ahead = True
+                            if frame % 60 == 0:
+                                _log("warn", f"LIDAR STOP — obstacle {min_fwd:.2f}m ahead", diag)
+            except Exception as exc:
+                _log("warn", f"LIDAR read error: {exc}", diag)
+
         # ── Drive ─────────────────────────────────────────────────────────────
-        scale = min(1.0, frame / RAMP_FRAMES)
-        drive_api.GetTargetVelocityAttr().Set(DRIVE_VELOCITY * scale)
+        if obstacle_ahead:
+            drive_api.GetTargetVelocityAttr().Set(0.0)
+        else:
+            scale = min(1.0, frame / RAMP_FRAMES)
+            drive_api.GetTargetVelocityAttr().Set(DRIVE_VELOCITY * scale)
         steer_api.GetTargetPositionAttr().Set(-steer_cmd)  # negated: joint localRot1 90° offset inverts steer direction
 
         # ── Diag every 60 frames ──────────────────────────────────────────────
@@ -204,15 +285,16 @@ async def run_forklift() -> None:
                 f"hdg={smooth_heading:.1f}  target={target_hdg:.1f}  "
                 f"err={heading_err:+.1f}  steer={steer_cmd:+.1f}  "
                 f"dist={dist:.1f}m  wp={wp_index}  lap={lap}"
+                + ("  LIDAR_STOP" if obstacle_ahead else "")
             )
-            carb.log_info(f"[forklift] {msg}")
+            _log("info", msg)
             diag.write(msg + "\n")
 
         frame += 1
         await app.next_update_async()
     diag.write("ARRIVED — controller stopped\n")
     diag.close()
-    carb.log_info("[forklift] All waypoints reached. Stopped.")
+    _log("info", "All waypoints reached. Stopped.")
 
 
 # ── Task management ───────────────────────────────────────────────────────────
