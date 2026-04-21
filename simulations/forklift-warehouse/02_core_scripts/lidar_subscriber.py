@@ -4,7 +4,7 @@ Reads PhysX lidar depth data from the existing sensor prim and writes the latest
 snapshot to a shared JSON file that the dashboard reads directly.
 
 Prerequisite: run lidar_sensor_setup.py first so the PhysX lidar exists at
-/World/forklift_b/lidar_sensor.
+/World/forklift_b/body/lidar_sensor.
 
 Run via VS Code: Ctrl+Shift+P -> Isaac Sim: Run File Remotely
 """
@@ -22,7 +22,7 @@ from pxr import UsdGeom
 
 
 FORKLIFT_PRIM_PATH = "/World/forklift_b"
-LIDAR_PRIM_PATH = "/World/forklift_b/lidar_sensor"
+LIDAR_PRIM_PATH = "/World/forklift_b/body/lidar_sensor"
 MIN_RANGE = 0.4
 MAX_RANGE = 40.0
 LOG_INTERVAL_FRAMES = 60

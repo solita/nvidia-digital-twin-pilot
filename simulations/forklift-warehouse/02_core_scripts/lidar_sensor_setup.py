@@ -30,11 +30,13 @@ from pxr import Gf, Usd, UsdGeom
 # -- Configuration -------------------------------------------------------------
 
 FORKLIFT_PRIM_PATH = "/World/forklift_b"
+FORKLIFT_BODY_PRIM_PATH = f"{FORKLIFT_PRIM_PATH}/body"
 LIDAR_PRIM_NAME = "lidar_sensor"
-LIDAR_PRIM_PATH = f"{FORKLIFT_PRIM_PATH}/{LIDAR_PRIM_NAME}"
+LIDAR_PRIM_PATH = f"{FORKLIFT_BODY_PRIM_PATH}/{LIDAR_PRIM_NAME}"
+LEGACY_LIDAR_PRIM_PATH = f"{FORKLIFT_PRIM_PATH}/{LIDAR_PRIM_NAME}"
 
 # Position offset relative to forklift origin (top of mast)
-LIDAR_POSITION = Gf.Vec3d(0.0, 0.0, 2.93)  # forklift height ~ 2.935 m
+LIDAR_POSITION = Gf.Vec3d(0.0, 0.0, 2.98)  # forklift height ~ 2.935 m
 
 # PhysX Lidar configuration (Rotating type)
 ROTATION_RATE = 10.0            # Hz - rotation speed
@@ -92,19 +94,33 @@ async def run_lidar_sensor_setup():
             return
         _log(f"Forklift prim OK: {FORKLIFT_PRIM_PATH}")
 
+        # Validate forklift body prim (lidar attachment parent)
+        forklift_body = stage.GetPrimAtPath(FORKLIFT_BODY_PRIM_PATH)
+        if not forklift_body.IsValid():
+            raise RuntimeError(
+                f"forklift body prim not found at {FORKLIFT_BODY_PRIM_PATH}"
+            )
+        _log(f"Forklift body prim OK: {FORKLIFT_BODY_PRIM_PATH}")
+
         # -- 2. Remove old LIDAR prim if it exists -----------------------------
+        old = stage.GetPrimAtPath(LEGACY_LIDAR_PRIM_PATH)
+        if old.IsValid():
+            omni.kit.commands.execute("DeletePrims", paths=[LEGACY_LIDAR_PRIM_PATH])
+            await _settle(5)
+            _log(f"Removed stale legacy LIDAR prim: {LEGACY_LIDAR_PRIM_PATH}")
+
         old = stage.GetPrimAtPath(LIDAR_PRIM_PATH)
         if old.IsValid():
             omni.kit.commands.execute("DeletePrims", paths=[LIDAR_PRIM_PATH])
             await _settle(5)
-            _log("Removed old LIDAR prim")
+            _log(f"Removed stale canonical LIDAR prim: {LIDAR_PRIM_PATH}")
 
-        # -- 3. Create PhysX Lidar (Rotating) as child of forklift -------------
+        # -- 3. Create PhysX Lidar (Rotating) as child of forklift body --------
         #    Equivalent to menu: Create > Isaac > Sensors > PhysX Lidar > Rotating
         result, prim = omni.kit.commands.execute(
             "RangeSensorCreateLidar",
             path=LIDAR_PRIM_NAME,
-            parent=FORKLIFT_PRIM_PATH,
+            parent=FORKLIFT_BODY_PRIM_PATH,
             min_range=MIN_RANGE,
             max_range=MAX_RANGE,
             draw_points=False,
