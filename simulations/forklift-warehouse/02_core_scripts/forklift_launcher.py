@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 """
-launcher.py — Isaac Sim simulation entry point template.
+forklift_launcher.py — Isaac Sim entry point for the forklift warehouse simulation.
 
-Rename this file to match your simulation (e.g. my_sim_launcher_v1.py).
-Update SCENE_FILE and MAIN_SCRIPT to point to your actual assets and logic.
+Opens scene_assembly.usd, starts the timeline, then hands off to
+forklift_controller.py which drives the forklift in an infinite patrol loop.
 
 Run via:
   ./run_sim.sh
-  or: VS Code → Isaac Sim: Run Remotely
+  or: VS Code → Isaac Sim: Run File Remotely
 """
 
 import asyncio
+import runpy
 from pathlib import Path
 
 import carb
@@ -25,9 +26,8 @@ _THIS_FILE = Path(__file__).resolve()
 SCRIPT_DIR = _THIS_FILE.parent
 WORKSPACE_DIR = SCRIPT_DIR.parent
 
-# Update these paths to match your scene and main script filenames.
-SCENE_FILE = WORKSPACE_DIR / "01_scenes" / "your_scene.usdc"
-MAIN_SCRIPT = SCRIPT_DIR / "your_sim_script.py"
+SCENE_FILE  = WORKSPACE_DIR / "01_scenes" / "scene_assembly.usd"
+MAIN_SCRIPT = SCRIPT_DIR   / "forklift_controller.py"
 
 STAGE_READY_TIMEOUT_S = 90.0
 SETTLE_UPDATES = 5
@@ -78,6 +78,15 @@ async def main() -> None:
     await _next_updates(SETTLE_UPDATES)
 
     if not await _wait_for_stage(STAGE_READY_TIMEOUT_S):
+        err("Timed out waiting for stage to load.")
+        return
+
+    log("Stage loaded — starting timeline.")
+    omni.timeline.get_timeline_interface().play()
+    await _next_updates(2)
+
+    log(f"Running forklift controller: {MAIN_SCRIPT}")
+    runpy.run_path(str(MAIN_SCRIPT), run_name="__main__")
         err("Timed out waiting for stage to load.")
         return
 

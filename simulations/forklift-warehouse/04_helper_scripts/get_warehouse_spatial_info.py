@@ -14,12 +14,21 @@ Run via VS Code: open this file and press Ctrl+Shift+P → Isaac Sim: Run File R
 Scene must already be open in Isaac Sim (scene_assembly.usd).
 """
 
+import io
+import os
+import sys
+
 import omni.usd
 from pxr import Gf, UsdGeom
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
 WAREHOUSE_PRIM_PATH = "/World/warehouse"
+
+# Output file — written alongside console output
+# Path is inside the container; maps to host via Docker bind mount:
+#   container: /isaac-sim/.local/share/ov/data/  →  host: /home/ubuntu/docker/isaac-sim/data/
+OUTPUT_FILE = "/isaac-sim/.local/share/ov/data/nvidia-digital-twin-pilot/simulations/forklift-warehouse/04_current_outputs/warehouse_spatial_info_latest.txt"
 
 # Forklift half-extents from get_forklift_transform.py (bbox size / 2)
 # Size: X=3.031m (width), Y=1.130m (length), Z=2.935m (height)
@@ -28,6 +37,23 @@ FORKLIFT_HALF_Y = 1.130 / 2   # 0.565 m
 
 # Extra clearance margin to add on top of forklift half-extents (metres)
 CLEARANCE_MARGIN = 0.5
+
+# ── Tee stdout → buffer (written to OUTPUT_FILE at end) ──────────────────────
+
+_buffer = io.StringIO()
+_orig_stdout = sys.stdout
+
+class _Tee:
+    def __init__(self, *streams):
+        self.streams = streams
+    def write(self, data):
+        for s in self.streams:
+            s.write(data)
+    def flush(self):
+        for s in self.streams:
+            s.flush()
+
+sys.stdout = _Tee(_orig_stdout, _buffer)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -107,15 +133,54 @@ else:
     print(f"  Forklift fits    : {'YES' if fits else 'NO — reduce CLEARANCE_MARGIN or check scale'}")
     print("-" * 60)
 
-    # ── Child prims ────────────────────────────────────────────────────────────
+    # ── Child prims — obstacle/rack only (skip full list for speed) ───────────
+    OBSTACLE_KEYWORDS = ("rack", "shelf", "shelv", "pallet", "column", "beam",
+                         "bracket", "storage", "post", "pillar")
     children = list(prim.GetChildren())
-    if children:
-        print(f"Child prims ({len(children)} total):")
-        for child in children:
-            cr = _bbox(child, bbox_cache)
-            cs = cr.GetMax() - cr.GetMin()
-            print(f"  {child.GetPath().pathString:<40} type={child.GetTypeName():<12} "
-                  f"size=({cs[0]:.2f}, {cs[1]:.2f}, {cs[2]:.2f})")
+    obstacles = []
+    for child in children:
+        name_lower = child.GetPath().name.lower()
+        if any(kw in name_lower for kw in OBSTACLE_KEYWORDS):
+            cr  = _bbox(child, bbox_cache)
+            ctr = (cr.GetMin() + cr.GetMax()) / 2
+            cs  = cr.GetMax() - cr.GetMin()
+            obstacles.append((child.GetPath().pathString, ctr, cs, cr))
+
+    if obstacles:
+        print(f"\nObstacles / racks ({len(obstacles)} matching prims):")
+        print(f"  {'Name':<45} {'CentreX':>8} {'CentreY':>8} {'SizeX':>7} {'SizeY':>7}")
+        print(f"  {'-'*45} {'-'*8} {'-'*8} {'-'*7} {'-'*7}")
+        for path, ctr, cs, cr in sorted(obstacles, key=lambda t: t[1][1]):
+            print(f"  {path:<45} {ctr[0]:>8.2f} {ctr[1]:>8.2f} {cs[0]:>7.2f} {cs[1]:>7.2f}")
     else:
-        print("Child prims: none (warehouse may be a single mesh)")
+        print(f"\nNo rack/shelf/pallet prims detected by keyword (checked {len(children)} children).")
+
+    # ── Forklift position ──────────────────────────────────────────────────────
+    print("\n" + "-" * 60)
+    fl_prim = stage.GetPrimAtPath("/World/forklift_b/body")
+    if fl_prim.IsValid():
+        from pxr import Usd
+        import math
+        m   = UsdGeom.Xformable(fl_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        pos = m.ExtractTranslation()
+        q   = m.ExtractRotationQuat()
+        xi, yi, zi = q.GetImaginary()
+        w   = q.GetReal()
+        yaw = math.degrees(math.atan2(2.0*(w*zi + xi*yi), 1.0 - 2.0*(yi*yi + zi*zi)))
+        print(f"Forklift position (/World/forklift_b/body):")
+        print(f"  X={pos[0]:.3f}  Y={pos[1]:.3f}  Z={pos[2]:.3f}  heading={yaw:.2f} deg")
+    else:
+        print("Forklift prim /World/forklift_b/body not found (run with scene loaded).")
+
     print("=" * 60)
+
+# ── Write captured output to file ─────────────────────────────────────────────
+sys.stdout = _orig_stdout
+try:
+    out_path = os.path.normpath(OUTPUT_FILE)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w") as f:
+        f.write(_buffer.getvalue())
+    print(f"\nOutput written to: {out_path}")
+except Exception as e:
+    print(f"WARNING: Could not write output file: {e}")

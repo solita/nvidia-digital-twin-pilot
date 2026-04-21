@@ -22,9 +22,9 @@
         }
     ],
     "settings": {
-        // Hide generated output files from the Explorer (they are gitignored anyway)
+        // Show generated output files in the Explorer
         "files.exclude": {
-            "**/simulations/*/04_current_outputs/**": true
+            "**/simulations/*/04_current_outputs/**": false
         }
     }
 }
