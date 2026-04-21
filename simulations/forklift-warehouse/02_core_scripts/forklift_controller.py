@@ -80,7 +80,7 @@ DIAG_LOG = (
 LIDAR_ENABLED      = True
 LIDAR_PRIM_PATH    = "/World/forklift_b/body/lidar"
 LIDAR_STOP_DIST    = 5.5    # metres — debounced forward stop (wider zone gives 2.7m turning window above 2.80m mast floor)
-LIDAR_SLOW_DIST    = 7.0    # metres — slow to half speed; also activates early open-side bias in this zone
+LIDAR_SLOW_DIST    = 6.5    # metres — beginning of proportional speed ramp
 LIDAR_DRAW_LINES   = False   # set False to disable viewport ray visualisation
 LIDAR_FORWARD_RAY  = 179    # ray index pointing forward — calibrated from live diag (cube ahead → ray 179)
 LIDAR_CONE_HALF    = 20     # half-width of forward detection cone in rays (degrees) — narrow to avoid self-hits during turns
@@ -218,7 +218,6 @@ async def run_forklift() -> None:
     lidar_fwd_slow            = False # forward obstacle within LIDAR_SLOW_DIST
     lidar_fwd_debounce_count  = 0     # rising counter: increments each STOP frame
     lidar_fwd_clear_count     = 0     # consecutive clear frames (hysteresis for debounce decay)
-    lidar_log_state           = ""    # last logged LIDAR state — for transition-only messages
     stuck_check_pos           = None  # (x, y) snapshot for stuck detection
     stuck_frames              = 0     # consecutive frames with no meaningful movement
     stuck_escape_frames       = 0     # countdown: >0 = executing escape maneuver
@@ -360,15 +359,6 @@ async def run_forklift() -> None:
             except Exception as exc:
                 _log("warn", f"LIDAR read error: {exc}", diag)
 
-        # ── LIDAR state logging (transition only) ─────────────────────────────
-        new_lidar_state = "STOP" if lidar_fwd_stop else ("SLOW" if lidar_fwd_slow else "")
-        if new_lidar_state != lidar_log_state:
-            if new_lidar_state == "STOP":
-                _log("warn", f"LIDAR FWD STOP — {forward_min:.2f}m  rep={repulsion_steer:+.1f}°", diag)
-            elif new_lidar_state == "" and lidar_log_state:
-                _log("info", f"LIDAR CLEAR — fwd={forward_min:.2f}m", diag)
-            lidar_log_state = new_lidar_state
-
         # ── Drive (APF-blended) ───────────────────────────────────────────────
         # Stuck detection — halt once on first trigger
         if stuck_check_pos is None:
@@ -411,17 +401,17 @@ async def run_forklift() -> None:
         # APF-blended steer: PD attraction (toward waypoint) + repulsion (all obstacles/walls)
         apf_steer = max(-STEER_MAX, min(STEER_MAX, steer_cmd + repulsion_steer))
 
-        if lidar_fwd_stop:
-            target_vel  = DRIVE_VELOCITY * LIDAR_FWDSTOP_SPEED
-            if abs(heading_err) < 25.0:
-                # Driving toward obstacle (not mid-turn): apply STEER_MAX for maximum lateral avoidance
+        if lidar_fwd_stop or lidar_fwd_slow:
+            # Proportional speed: linearly ramp from 100% at SLOW_DIST down to FWDSTOP_SPEED at STOP_DIST.
+            # Uses raw forward_min so speed tracks distance smoothly rather than snapping between states.
+            t          = max(0.0, min(1.0, (forward_min - LIDAR_STOP_DIST) / max(LIDAR_SLOW_DIST - LIDAR_STOP_DIST, 0.1)))
+            speed_frac = LIDAR_FWDSTOP_SPEED + t * (1.0 - LIDAR_FWDSTOP_SPEED)
+            target_vel = DRIVE_VELOCITY * speed_frac
+            if lidar_fwd_stop and abs(heading_err) < 25.0:
+                # Confirmed stop, driving toward obstacle: apply STEER_MAX for maximum avoidance authority
                 final_steer = STEER_MAX if repulsion_steer >= 0 else -STEER_MAX
             else:
-                # In a waypoint turn: let APF handle it to avoid fighting heading correction
                 final_steer = apf_steer
-        elif lidar_fwd_slow:
-            target_vel  = DRIVE_VELOCITY * 0.5
-            final_steer = apf_steer
         else:
             scale       = min(1.0, frame / RAMP_FRAMES)
             target_vel  = DRIVE_VELOCITY * scale
