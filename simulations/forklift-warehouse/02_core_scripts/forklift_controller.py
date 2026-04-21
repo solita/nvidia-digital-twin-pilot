@@ -31,7 +31,7 @@ DRIVE_JOINT_PATH = "/World/forklift_b/back_wheel_joints/back_wheel_drive"
 STEER_JOINT_PATH = "/World/forklift_b/back_wheel_joints/back_wheel_swivel"
 FORKLIFT_PRIM    = "/World/forklift_b/body"  # physics rigid body — this is what actually moves
 
-DRIVE_VELOCITY = +400.0   # deg/s wheel spin -- positive = forward/south at heading -90°
+DRIVE_VELOCITY = +550.0   # deg/s wheel spin -- positive = forward/south at heading -90°
 SETTLE_FRAMES  =  60      # physics settle before driving
 RAMP_FRAMES    =  60      # ramp from 0 → full speed to avoid torque spike
 
@@ -56,20 +56,20 @@ HEADING_SMOOTH =   0.40   # EMA factor for heading (0=frozen, 1=raw) — filters
 #
 # Aisles used:
 #   South cross  Y = -45  (below all columns south end Y=-27.80)
-#   East aisle   X = +20  (between columns at X=8.41 and X=26.52)
+#   East aisle   X = +17  (between columns at X=8.41 and X=26.52; centred gives ~9m buffer from east wall)
 #   North cross  Y = +55  (above all racks north end Y=36.38 and pillars Y=45.12)
 #   West-center  X = -24  (FL west edge -25.52, rack east edge -27.02 -> 1.50m clearance)
 #
 # REST_HEADING must be -90 deg so DRIVE_VELOCITY=+200 drives straight south to WP0.
 WAYPOINTS = [
     (-15.0, -33.0),   # WP0: south end        -- actual south floor boundary ~Y=-36.4, 3m buffer
-    ( 20.0, -33.0),   # WP1: south-east       -- east in south cross-aisle
-    ( 20.0,  48.0),   # WP2: north-east       -- actual north wall ~Y=52.3, 4m buffer to turn
+    ( 17.0, -33.0),   # WP1: south-east       -- east in south cross-aisle (X=17: 9m from east column X=26.52)
+    ( 17.0,  48.0),   # WP2: north-east       -- actual north wall ~Y=52.3, 4m buffer to turn
     (-24.0,  48.0),   # WP3: north-west       -- west in north cross-aisle
     (-24.0, -33.0),   # WP4: south-west       -- south in west-center aisle
     (-15.0, -17.5),   # WP5: start zone       -- loops back to WP0
 ]
-ARRIVAL_RADIUS = 4.0   # metres -- advance to next waypoint when within this
+ARRIVAL_RADIUS = 2.5   # metres -- advance to next waypoint when within this (tighter = cleaner corners)
 
 DIAG_LOG = (
     "/isaac-sim/.local/share/ov/data/nvidia-digital-twin-pilot/"
@@ -85,11 +85,14 @@ LIDAR_DRAW_LINES   = False   # set False to disable viewport ray visualisation
 LIDAR_FORWARD_RAY  = 179    # ray index pointing forward — calibrated from live diag (cube ahead → ray 179)
 LIDAR_CONE_HALF    = 20     # half-width of forward detection cone in rays (degrees) — narrow to avoid self-hits during turns
 LIDAR_MIN_VALID    = 2.80   # metres — software floor for FORWARD cone (mast tip reads up to 2.72m with physics jitter)
+LIDAR_MIN_HIT_COUNT = 4    # minimum rays in forward cone that must read below STOP_DIST to confirm a real obstacle
+                           # mast shadow = 1-3 rays (narrow strut); a 1m cube at 5m = ~11 rays
 LIDAR_REPULSE_GAIN  = 10.0  # deg·m — lateral repulsion gain for 1/d formula (K/d per sector)
 LIDAR_REPULSE_RANGE =  3.5  # m — max distance at which a sector obstacle contributes repulsion (shorter = less wall interference with PD heading correction)
 LIDAR_REPULSE_ARC   =  130  # deg — ±arc from forward scanned for lateral sectors (excludes directly behind)
-LIDAR_AVOID_STEER   =  20.0 # deg — open-side directional bias applied when forward stop is confirmed
-LIDAR_FWDSTOP_SPEED =  0.40 # fraction of DRIVE_VELOCITY in confirmed STOP (higher = more turning authority per second)
+LIDAR_AVOID_STEER   =   8.0 # deg — open-side directional bias; kept low to prevent aisle drift overwhelming PD heading correction
+LIDAR_HARD_STOP_DIST =  3.2 # metres — full stop threshold: below this the FL halts completely to avoid pressing into obstacles
+LIDAR_FWDSTOP_SPEED =  0.40 # fraction of DRIVE_VELOCITY at STOP_DIST (ramp floor); overridden to 0 below HARD_STOP_DIST
 LIDAR_DEBOUNCE_FRAMES = 5   # consecutive frames forward obstacle must persist before triggering STOP
 STUCK_CHECK_FRAMES  =  180  # frames with no movement → trigger escape maneuver
 STUCK_ESCAPE_FRAMES =  120  # total escape: 60 frames reverse (break contact) + 60 frames forward (steer clear)
@@ -276,14 +279,17 @@ async def run_forklift() -> None:
                     flat = [float(d) for d in depths.flat]
                     n    = len(flat)
 
-                    # Forward cone: minimum range for stop/slow (mast self-hit floor applied)
+                    # Forward cone: minimum range for stop/slow (mast self-hit floor applied).
+                    # Only fire if >= LIDAR_MIN_HIT_COUNT rays agree — filters the narrow mast
+                    # shadow (1-3 rays) while a real obstacle at 5m fills 10+ rays.
                     fwd_hits = [
                         flat[i % n]
                         for i in range(LIDAR_FORWARD_RAY - LIDAR_CONE_HALF,
                                        LIDAR_FORWARD_RAY + LIDAR_CONE_HALF + 1)
                         if math.isfinite(flat[i % n]) and flat[i % n] > LIDAR_MIN_VALID and flat[i % n] < 8.0
                     ]
-                    forward_min = min(fwd_hits) if fwd_hits else 9.9
+                    stop_hits = [d for d in fwd_hits if d < LIDAR_STOP_DIST]
+                    forward_min = min(fwd_hits) if len(stop_hits) >= LIDAR_MIN_HIT_COUNT else 9.9
 
                     # Hysteresis debounce: count up immediately on each STOP frame,
                     # but only count DOWN after 5 consecutive CLEAR frames.
@@ -401,12 +407,20 @@ async def run_forklift() -> None:
         # APF-blended steer: PD attraction (toward waypoint) + repulsion (all obstacles/walls)
         apf_steer = max(-STEER_MAX, min(STEER_MAX, steer_cmd + repulsion_steer))
 
+        # Turn-speed limiter: reduce speed when heading error is large so the FL
+        # covers less ground per frame while steering through sharp turns/waypoints.
+        # 100% when |err|<=15°, ramps to 50% at |err|>=60°.  Multiplies all drive paths.
+        turn_scale = max(0.5, 1.0 - max(0.0, abs(heading_err) - 15.0) / 90.0)
+
         if lidar_fwd_stop or lidar_fwd_slow:
-            # Proportional speed: linearly ramp from 100% at SLOW_DIST down to FWDSTOP_SPEED at STOP_DIST.
-            # Uses raw forward_min so speed tracks distance smoothly rather than snapping between states.
-            t          = max(0.0, min(1.0, (forward_min - LIDAR_STOP_DIST) / max(LIDAR_SLOW_DIST - LIDAR_STOP_DIST, 0.1)))
-            speed_frac = LIDAR_FWDSTOP_SPEED + t * (1.0 - LIDAR_FWDSTOP_SPEED)
-            target_vel = DRIVE_VELOCITY * speed_frac
+            # Full stop when very close: prevents crawling into walls/columns.
+            # Proportional ramp between HARD_STOP_DIST and SLOW_DIST.
+            if forward_min < LIDAR_HARD_STOP_DIST:
+                speed_frac = 0.0
+            else:
+                t          = max(0.0, min(1.0, (forward_min - LIDAR_STOP_DIST) / max(LIDAR_SLOW_DIST - LIDAR_STOP_DIST, 0.1)))
+                speed_frac = LIDAR_FWDSTOP_SPEED + t * (1.0 - LIDAR_FWDSTOP_SPEED)
+            target_vel = DRIVE_VELOCITY * speed_frac * turn_scale
             if lidar_fwd_stop and abs(heading_err) < 25.0:
                 # Confirmed stop, driving toward obstacle: apply STEER_MAX for maximum avoidance authority
                 final_steer = STEER_MAX if repulsion_steer >= 0 else -STEER_MAX
@@ -414,7 +428,7 @@ async def run_forklift() -> None:
                 final_steer = apf_steer
         else:
             scale       = min(1.0, frame / RAMP_FRAMES)
-            target_vel  = DRIVE_VELOCITY * scale
+            target_vel  = DRIVE_VELOCITY * scale * turn_scale
             final_steer = apf_steer
         drive_api.GetTargetVelocityAttr().Set(target_vel)
         steer_api.GetTargetPositionAttr().Set(-final_steer)  # negated: joint localRot1 90° offset inverts steer direction
