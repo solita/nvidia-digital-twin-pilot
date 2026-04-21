@@ -79,20 +79,20 @@ DIAG_LOG = (
 # ── LIDAR sensor (2D, single horizontal ring) ─────────────────────────────────
 LIDAR_ENABLED      = True
 LIDAR_PRIM_PATH    = "/World/forklift_b/body/lidar"
-LIDAR_STOP_DIST    = 4.5    # metres — debounced forward stop (wider margin above 2.35m mast noise floor)
-LIDAR_SLOW_DIST    = 5.5    # metres — slow to half speed when obstacle within this range
+LIDAR_STOP_DIST    = 5.5    # metres — debounced forward stop (wider zone gives 2.7m turning window above 2.80m mast floor)
+LIDAR_SLOW_DIST    = 7.0    # metres — slow to half speed; also activates early open-side bias in this zone
 LIDAR_DRAW_LINES   = False   # set False to disable viewport ray visualisation
 LIDAR_FORWARD_RAY  = 179    # ray index pointing forward — calibrated from live diag (cube ahead → ray 179)
 LIDAR_CONE_HALF    = 20     # half-width of forward detection cone in rays (degrees) — narrow to avoid self-hits during turns
-LIDAR_MIN_VALID    = 2.55   # metres — software floor for FORWARD cone only (mast tip ~2.2m; 2.55 safely excludes jitter)
+LIDAR_MIN_VALID    = 2.80   # metres — software floor for FORWARD cone (mast tip reads up to 2.72m with physics jitter)
 LIDAR_REPULSE_GAIN  = 10.0  # deg·m — lateral repulsion gain for 1/d formula (K/d per sector)
 LIDAR_REPULSE_RANGE =  3.5  # m — max distance at which a sector obstacle contributes repulsion (shorter = less wall interference with PD heading correction)
 LIDAR_REPULSE_ARC   =  130  # deg — ±arc from forward scanned for lateral sectors (excludes directly behind)
 LIDAR_AVOID_STEER   =  20.0 # deg — open-side directional bias applied when forward stop is confirmed
-LIDAR_FWDSTOP_SPEED =  0.25 # fraction of DRIVE_VELOCITY while forward obstacle < LIDAR_STOP_DIST
+LIDAR_FWDSTOP_SPEED =  0.40 # fraction of DRIVE_VELOCITY in confirmed STOP (higher = more turning authority per second)
 LIDAR_DEBOUNCE_FRAMES = 5   # consecutive frames forward obstacle must persist before triggering STOP
 STUCK_CHECK_FRAMES  =  180  # frames with no movement → trigger escape maneuver
-STUCK_ESCAPE_FRAMES =   60  # frames of forced full-speed + max-steer escape
+STUCK_ESCAPE_FRAMES =  120  # total escape: 60 frames reverse (break contact) + 60 frames forward (steer clear)
 STUCK_MIN_MOVE      =  0.10 # m — minimum displacement per STUCK_CHECK_FRAMES to reset counter
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -328,27 +328,34 @@ async def run_forklift() -> None:
                     r_right = (LIDAR_REPULSE_GAIN / right_min_repulse) if right_min_repulse < LIDAR_REPULSE_RANGE else 0.0
                     repulsion_steer = max(-STEER_MAX, min(STEER_MAX, r_left - r_right))
 
-                    # Open-side selection: when forward stop is confirmed, scan the ±25-80°
-                    # lateral arcs to find which side has more clear space and add a strong
-                    # directional bias toward it.  This handles centered obstacles where the
-                    # APF differential repulsion is near zero.
-                    if lidar_fwd_stop:
-                        ro_right = min(
+                    # Open-side selection: scan ±25-80° lateral arcs, pick side with more clear space.
+                    # Applied in STOP mode (full bias) and early approach (half bias) for earlier turning.
+                    def _open_side_scan():
+                        ro_r = min(
                             (flat[i % n] for i in range(LIDAR_FORWARD_RAY + 25, LIDAR_FORWARD_RAY + 80)
                              if math.isfinite(flat[i % n]) and flat[i % n] >= 0.5),
                             default=9.9
                         )
-                        ro_left = min(
+                        ro_l = min(
                             (flat[i % n] for i in range(LIDAR_FORWARD_RAY - 80, LIDAR_FORWARD_RAY - 25)
                              if math.isfinite(flat[i % n]) and flat[i % n] >= 0.5),
                             default=9.9
                         )
-                        # Positive steer = turn right; pick side with larger minimum (more open)
+                        return ro_r, ro_l
+
+                    if lidar_fwd_stop:
+                        ro_right, ro_left = _open_side_scan()
                         open_bias = LIDAR_AVOID_STEER if ro_right >= ro_left else -LIDAR_AVOID_STEER
                         repulsion_steer = max(-STEER_MAX, min(STEER_MAX, repulsion_steer + open_bias))
-                    elif lidar_fwd_debounce_count > 0 and abs(repulsion_steer) < 5.0:
-                        # Early tiebreak during approach (partial debounce, obstacle not yet confirmed)
-                        repulsion_steer = 8.0
+                    elif lidar_fwd_debounce_count >= 2:
+                        # Cube approaching, partially confirmed: directional half-bias for earlier course correction
+                        ro_right, ro_left = _open_side_scan()
+                        early_bias = (LIDAR_AVOID_STEER * 0.5) if ro_right >= ro_left else -(LIDAR_AVOID_STEER * 0.5)
+                        repulsion_steer = max(-STEER_MAX, min(STEER_MAX, repulsion_steer + early_bias))
+                    elif lidar_fwd_debounce_count == 1 and abs(repulsion_steer) < 5.0:
+                        # Single-frame detection: gentle 8° nudge toward the more open side
+                        ro_right, ro_left = _open_side_scan()
+                        repulsion_steer = 8.0 if ro_right >= ro_left else -8.0
 
             except Exception as exc:
                 _log("warn", f"LIDAR read error: {exc}", diag)
@@ -376,16 +383,26 @@ async def run_forklift() -> None:
                 stuck_frames += 1
                 if stuck_frames == STUCK_CHECK_FRAMES:
                     _log("warn", f"STUCK — escape maneuver at ({fx:.1f},{fy:.1f}) rep={repulsion_steer:+.1f}°", diag)
-                    stuck_escape_frames = STUCK_ESCAPE_FRAMES
-                    stuck_frames        = 0
-                    stuck_check_pos     = (fx, fy)
+                    stuck_escape_frames      = STUCK_ESCAPE_FRAMES
+                    stuck_frames             = 0
+                    stuck_check_pos          = (fx, fy)
+                    lidar_fwd_debounce_count = 0   # reset so LIDAR doesn't immediately re-lock after escape
+                    lidar_fwd_clear_count    = 0
                     diag.flush()
 
-        # Escape maneuver: full-speed + max steer toward open side, ignoring LIDAR slow/stop
+        # Escape maneuver: two-phase to break contact and steer clear
+        # Phase 1 (first half): reverse slowly straight back to break physical contact with column/cube
+        # Phase 2 (second half): forward at full speed with max steer toward the open side
         if stuck_escape_frames > 0:
-            escape_steer = STEER_MAX if repulsion_steer >= 0 else -STEER_MAX
-            drive_api.GetTargetVelocityAttr().Set(DRIVE_VELOCITY)
-            steer_api.GetTargetPositionAttr().Set(-escape_steer)
+            if stuck_escape_frames > STUCK_ESCAPE_FRAMES // 2:
+                # Phase 1: reverse, no steer
+                drive_api.GetTargetVelocityAttr().Set(-DRIVE_VELOCITY * 0.40)
+                steer_api.GetTargetPositionAttr().Set(0.0)
+            else:
+                # Phase 2: forward + open-side steer
+                escape_steer = STEER_MAX if repulsion_steer >= 0 else -STEER_MAX
+                drive_api.GetTargetVelocityAttr().Set(DRIVE_VELOCITY)
+                steer_api.GetTargetPositionAttr().Set(-escape_steer)
             stuck_escape_frames -= 1
             frame += 1
             await app.next_update_async()
@@ -395,8 +412,13 @@ async def run_forklift() -> None:
         apf_steer = max(-STEER_MAX, min(STEER_MAX, steer_cmd + repulsion_steer))
 
         if lidar_fwd_stop:
-            target_vel  = DRIVE_VELOCITY * LIDAR_FWDSTOP_SPEED  # slow crawl; APF steers around
-            final_steer = apf_steer
+            target_vel  = DRIVE_VELOCITY * LIDAR_FWDSTOP_SPEED
+            if abs(heading_err) < 25.0:
+                # Driving toward obstacle (not mid-turn): apply STEER_MAX for maximum lateral avoidance
+                final_steer = STEER_MAX if repulsion_steer >= 0 else -STEER_MAX
+            else:
+                # In a waypoint turn: let APF handle it to avoid fighting heading correction
+                final_steer = apf_steer
         elif lidar_fwd_slow:
             target_vel  = DRIVE_VELOCITY * 0.5
             final_steer = apf_steer
