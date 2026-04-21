@@ -15,6 +15,7 @@ Dev owner: Dev 2
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import os
 
@@ -74,6 +75,10 @@ ARRIVAL_RADIUS = 2.5   # metres -- advance to next waypoint when within this (ti
 DIAG_LOG = (
     "/isaac-sim/.local/share/ov/data/nvidia-digital-twin-pilot/"
     "simulations/forklift-warehouse/04_current_outputs/forklift_diag.txt"
+)
+STATE_JSON = (
+    "/isaac-sim/.local/share/ov/data/nvidia-digital-twin-pilot/"
+    "simulations/forklift-warehouse/04_current_outputs/forklift_state.json"
 )
 
 # ── LIDAR sensor (2D, single horizontal ring) ─────────────────────────────────
@@ -432,6 +437,35 @@ async def run_forklift() -> None:
             final_steer = apf_steer
         drive_api.GetTargetVelocityAttr().Set(target_vel)
         steer_api.GetTargetPositionAttr().Set(-final_steer)  # negated: joint localRot1 90° offset inverts steer direction
+
+        # ── State JSON every 10 frames (dashboard data source) ──────────────
+        if frame % 10 == 0:
+            lidar_tag = (
+                "STOP" if lidar_fwd_stop else
+                "SLOW" if lidar_fwd_slow else
+                "CLEAR"
+            )
+            state = {
+                "frame":        frame,
+                "x":            round(fx, 2),
+                "y":            round(fy, 2),
+                "heading":      round(smooth_heading, 1),
+                "target_hdg":   round(target_hdg, 1),
+                "heading_err":  round(heading_err, 1),
+                "wp":           wp_index,
+                "lap":          lap,
+                "dist_to_wp":   round(dist, 2),
+                "lidar_state":  lidar_tag,
+                "forward_min":  round(forward_min, 2),
+                "repulsion":    round(repulsion_steer, 1),
+                "speed_frac":   round(target_vel / DRIVE_VELOCITY, 2),
+                "waypoints":    WAYPOINTS,
+            }
+            try:
+                with open(STATE_JSON, "w") as _sf:
+                    json.dump(state, _sf)
+            except Exception:
+                pass
 
         # ── Diag every 60 frames ──────────────────────────────────────────────
         if frame % 60 == 0:
