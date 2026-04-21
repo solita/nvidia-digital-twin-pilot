@@ -31,7 +31,7 @@ DRIVE_JOINT_PATH = "/World/forklift_b/back_wheel_joints/back_wheel_drive"
 STEER_JOINT_PATH = "/World/forklift_b/back_wheel_joints/back_wheel_swivel"
 FORKLIFT_PRIM    = "/World/forklift_b/body"  # physics rigid body — this is what actually moves
 
-DRIVE_VELOCITY = +400.0   # deg/s wheel spin -- positive = forward/south at heading -90°
+DRIVE_VELOCITY = +550.0   # deg/s wheel spin -- positive = forward/south at heading -90°
 SETTLE_FRAMES  =  60      # physics settle before driving
 RAMP_FRAMES    =  60      # ramp from 0 → full speed to avoid torque spike
 
@@ -401,12 +401,17 @@ async def run_forklift() -> None:
         # APF-blended steer: PD attraction (toward waypoint) + repulsion (all obstacles/walls)
         apf_steer = max(-STEER_MAX, min(STEER_MAX, steer_cmd + repulsion_steer))
 
+        # Turn-speed limiter: reduce speed when heading error is large so the FL
+        # covers less ground per frame while steering through sharp turns/waypoints.
+        # 100% when |err|<=15°, ramps to 50% at |err|>=60°.  Multiplies all drive paths.
+        turn_scale = max(0.5, 1.0 - max(0.0, abs(heading_err) - 15.0) / 90.0)
+
         if lidar_fwd_stop or lidar_fwd_slow:
             # Proportional speed: linearly ramp from 100% at SLOW_DIST down to FWDSTOP_SPEED at STOP_DIST.
             # Uses raw forward_min so speed tracks distance smoothly rather than snapping between states.
             t          = max(0.0, min(1.0, (forward_min - LIDAR_STOP_DIST) / max(LIDAR_SLOW_DIST - LIDAR_STOP_DIST, 0.1)))
             speed_frac = LIDAR_FWDSTOP_SPEED + t * (1.0 - LIDAR_FWDSTOP_SPEED)
-            target_vel = DRIVE_VELOCITY * speed_frac
+            target_vel = DRIVE_VELOCITY * speed_frac * turn_scale
             if lidar_fwd_stop and abs(heading_err) < 25.0:
                 # Confirmed stop, driving toward obstacle: apply STEER_MAX for maximum avoidance authority
                 final_steer = STEER_MAX if repulsion_steer >= 0 else -STEER_MAX
@@ -414,7 +419,7 @@ async def run_forklift() -> None:
                 final_steer = apf_steer
         else:
             scale       = min(1.0, frame / RAMP_FRAMES)
-            target_vel  = DRIVE_VELOCITY * scale
+            target_vel  = DRIVE_VELOCITY * scale * turn_scale
             final_steer = apf_steer
         drive_api.GetTargetVelocityAttr().Set(target_vel)
         steer_api.GetTargetPositionAttr().Set(-final_steer)  # negated: joint localRot1 90° offset inverts steer direction
