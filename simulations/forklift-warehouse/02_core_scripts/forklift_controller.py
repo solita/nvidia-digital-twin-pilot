@@ -83,7 +83,8 @@ LIDAR_STOP_DIST    = 2.0    # metres — stop if obstacle this close in forward 
 LIDAR_DRAW_LINES   = False   # set False to disable viewport ray visualisation
 LIDAR_FORWARD_RAY  = 179    # ray index pointing forward — calibrated from live diag (cube ahead → ray 179)
 LIDAR_CONE_HALF    = 45     # half-width of forward detection cone in rays (degrees)
-
+LIDAR_MIN_VALID    = 1.65   # metres — lower filter threshold: excludes self-hits at min_range boundary (1.5m)
+LIDAR_DEBOUNCE_FRAMES = 5   # consecutive frames obstacle must be detected before stopping (filters 1-2 frame self-hits)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -202,6 +203,7 @@ async def run_forklift() -> None:
     frame      = 0
     wp_index   = 0
     lap        = 0
+    lidar_trigger_count = 0   # consecutive frames with obstacle in forward cone
 
     while True:  # loop forever
         if not timeline.is_playing():
@@ -259,14 +261,21 @@ async def run_forklift() -> None:
                         fwd = flat[lo:hi + 1]
                     else:
                         fwd = [flat[i % len(flat)] for i in range(lo, hi + 1)]
-                    # Filter: discard NaN/inf, near-zero (uninitialized/within min_range), and max_range (no hit)
-                    valid_fwd = [d for d in fwd if math.isfinite(d) and d > 0.1 and d < 8.0]
+                    # Filter: discard NaN/inf, self-hits at min_range boundary, and max_range (no hit)
+                    valid_fwd = [d for d in fwd if math.isfinite(d) and d > LIDAR_MIN_VALID and d < 8.0]
                     if valid_fwd:
                         min_fwd = min(valid_fwd)
                         if min_fwd < LIDAR_STOP_DIST:
-                            obstacle_ahead = True
-                            if frame % 60 == 0:
-                                _log("warn", f"LIDAR STOP — obstacle {min_fwd:.2f}m ahead", diag)
+                            lidar_trigger_count += 1
+                        else:
+                            lidar_trigger_count = 0
+                    else:
+                        lidar_trigger_count = 0
+
+                    if lidar_trigger_count >= LIDAR_DEBOUNCE_FRAMES:
+                        obstacle_ahead = True
+                        if frame % 60 == 0:
+                            _log("warn", f"LIDAR STOP — obstacle {min(valid_fwd):.2f}m ahead", diag)
             except Exception as exc:
                 _log("warn", f"LIDAR read error: {exc}", diag)
 
