@@ -490,39 +490,40 @@ function drawDynamic(data) {
   // LIDAR pie chart — 9 sectors showing obstacle detection around forklift
   {
     const sl = data.lidar_slices || [false,false,false,false,false,false,false,false,false];
-    const lr = worldToPixel(8);  // 8 m LIDAR range, to scale
+    const lrF  = worldToPixel(8);  // 8 m front cone range, to scale
+    const lrSB = worldToPixel(4);  // 4 m side/back range (half), to scale
     const D  = Math.PI / 180;
     const clr  = "rgba(76,175,125,0.15)";
     const hitC = "rgba(224,85,85,0.22)";
     const clrS = "rgba(76,175,125,0.30)";
     const hitS = "rgba(224,85,85,0.45)";
     const pie = [
-      // Front 3 slices
-      { s: Math.PI-20*D,     e: Math.PI-6.67*D,   h: sl[0] },  // front-left
-      { s: Math.PI-6.67*D,   e: Math.PI+6.67*D,   h: sl[1] },  // front-center
-      { s: Math.PI+6.67*D,   e: Math.PI+20*D,     h: sl[2] },  // front-right
-      // Right 2 slices
-      { s: Math.PI+20*D,     e: Math.PI+73.33*D,  h: sl[3] },  // right-front
-      { s: Math.PI+73.33*D,  e: Math.PI+126.67*D, h: sl[4] },  // right-back
-      // Back 2 slices
-      { s: Math.PI+126.67*D, e: Math.PI+180*D,    h: sl[5] },  // back-right
-      { s: Math.PI-180*D,    e: Math.PI-126.67*D, h: sl[6] },  // back-left
-      // Left 2 slices
-      { s: Math.PI-126.67*D, e: Math.PI-73.33*D,  h: sl[7] },  // left-back
-      { s: Math.PI-73.33*D,  e: Math.PI-20*D,     h: sl[8] },  // left-front
+      // Front 3 slices (full 8 m range)
+      { s: Math.PI-20*D,     e: Math.PI-6.67*D,   h: sl[0], r: lrF  },  // front-left
+      { s: Math.PI-6.67*D,   e: Math.PI+6.67*D,   h: sl[1], r: lrF  },  // front-center
+      { s: Math.PI+6.67*D,   e: Math.PI+20*D,     h: sl[2], r: lrF  },  // front-right
+      // Right 2 slices (half range 4 m)
+      { s: Math.PI+20*D,     e: Math.PI+73.33*D,  h: sl[3], r: lrSB },  // right-front
+      { s: Math.PI+73.33*D,  e: Math.PI+126.67*D, h: sl[4], r: lrSB },  // right-back
+      // Back 2 slices (half range 4 m)
+      { s: Math.PI+126.67*D, e: Math.PI+180*D,    h: sl[5], r: lrSB },  // back-right
+      { s: Math.PI-180*D,    e: Math.PI-126.67*D, h: sl[6], r: lrSB },  // back-left
+      // Left 2 slices (half range 4 m)
+      { s: Math.PI-126.67*D, e: Math.PI-73.33*D,  h: sl[7], r: lrSB },  // left-back
+      { s: Math.PI-73.33*D,  e: Math.PI-20*D,     h: sl[8], r: lrSB },  // left-front
     ];
     pie.forEach(p => {
       ctx.beginPath(); ctx.moveTo(0,0);
-      ctx.arc(0,0,lr,p.s,p.e); ctx.closePath();
+      ctx.arc(0,0,p.r,p.s,p.e); ctx.closePath();
       ctx.fillStyle = p.h ? hitC : clr; ctx.fill();
       ctx.strokeStyle = p.h ? hitS : clrS; ctx.lineWidth=1; ctx.stroke();
     });
-    // Slice divider lines
-    [Math.PI-20*D, Math.PI-6.67*D, Math.PI+6.67*D, Math.PI+20*D,
-     Math.PI+73.33*D, Math.PI+126.67*D, Math.PI+180*D,
-     Math.PI-126.67*D, Math.PI-73.33*D].forEach(a => {
+    // Slice divider lines (front-cone boundaries at full range, others at half)
+    [[Math.PI-20*D,lrF], [Math.PI-6.67*D,lrF], [Math.PI+6.67*D,lrF], [Math.PI+20*D,lrF],
+     [Math.PI+73.33*D,lrSB], [Math.PI+126.67*D,lrSB], [Math.PI+180*D,lrSB],
+     [Math.PI-126.67*D,lrSB], [Math.PI-73.33*D,lrSB]].forEach(([a,r]) => {
       ctx.beginPath(); ctx.moveTo(0,0);
-      ctx.lineTo(Math.cos(a)*lr, Math.sin(a)*lr);
+      ctx.lineTo(Math.cos(a)*r, Math.sin(a)*r);
       ctx.strokeStyle="rgba(200,200,200,0.18)"; ctx.lineWidth=1; ctx.stroke();
     });
   }

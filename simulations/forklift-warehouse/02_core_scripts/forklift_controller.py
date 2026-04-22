@@ -97,6 +97,7 @@ LIDAR_REPULSE_GAIN  = 10.0  # deg·m — lateral repulsion gain for 1/d formula 
 LIDAR_REPULSE_RANGE =  3.5  # m — max distance at which a sector obstacle contributes repulsion (shorter = less wall interference with PD heading correction)
 LIDAR_REPULSE_ARC   =  130  # deg — ±arc from forward scanned for lateral sectors (excludes directly behind)
 LIDAR_AVOID_STEER   =   8.0 # deg — open-side directional bias; kept low to prevent aisle drift overwhelming PD heading correction
+LIDAR_SIDE_BACK_RANGE = 4.0 # metres — reduced detection range for side/back sectors (half of front 8.0 m)
 LIDAR_HARD_STOP_DIST =  2.5 # metres — full stop threshold: very close obstacle, halt immediately
 LIDAR_FWDSTOP_SPEED =  0.40 # fraction of DRIVE_VELOCITY at STOP_DIST (ramp floor); overridden to 0 below HARD_STOP_DIST
 LIDAR_DEBOUNCE_FRAMES = 5   # consecutive frames forward obstacle must persist before triggering STOP
@@ -324,6 +325,12 @@ async def run_forklift() -> None:
                     # ── Self-hit filter: discard any depth inside the forklift bbox ──
                     for _si in range(n):
                         if flat[_si] < _LIDAR_SAFE_ZONE[_si % 360]:
+                            flat[_si] = float('inf')
+
+                    # ── Side/back range cap: halve detection range outside front cone ──
+                    for _si in range(n):
+                        _off = ((_si - LIDAR_FORWARD_RAY) + 180) % 360 - 180
+                        if abs(_off) > LIDAR_CONE_HALF and flat[_si] > LIDAR_SIDE_BACK_RANGE:
                             flat[_si] = float('inf')
 
                     # Emergency close-range check: bypass MIN_HIT_COUNT/MIN_VALID for very near obstacles.
