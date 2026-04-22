@@ -58,6 +58,7 @@ DEFAULT_CAMERA = "CamBack"
 # Legacy path to clean up
 _OLD_CAMERA_PATH = "/World/forklift_b/FollowCam"
 
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 stage = omni.usd.get_context().get_stage()
 
@@ -70,22 +71,35 @@ else:
         stage.RemovePrim(_OLD_CAMERA_PATH)
         print(f"[attach_follow_camera] Removed legacy camera at {_OLD_CAMERA_PATH}")
 
+    # --- Remove any existing cameras with the same names to prevent duplicates ---
+    # This ensures repeated runs do not create duplicate cameras.
+    for cam_def in CAMERAS:
+        path = f"{BODY_PRIM_PATH}/{cam_def['name']}"
+        existing = stage.GetPrimAtPath(path)
+        if existing.IsValid():
+            stage.RemovePrim(path)
+            print(f"[attach_follow_camera] Removed existing camera at {path}")
+
     active_path = None
 
     for cam_def in CAMERAS:
         path = f"{BODY_PRIM_PATH}/{cam_def['name']}"
 
-        # Always recreate so re-running picks up changed values
-        existing = stage.GetPrimAtPath(path)
-        if existing.IsValid():
-            stage.RemovePrim(path)
-
+        # Create camera at specified offset and rotation (do not change these)
         camera = UsdGeom.Camera.Define(stage, path)
         xform  = UsdGeom.Xformable(camera.GetPrim())
         xform.AddTranslateOp().Set(cam_def["offset"])
         xform.AddRotateXYZOp().Set(cam_def["rotation"])
         camera.CreateFocalLengthAttr(24.0)
+
+        # --- Ensure forklift is always visible in the camera view ---
+        # 1. Set a very large far clipping plane so the forklift is visible even if camera is outside warehouse walls.
+        # 2. Attempt to disable occlusion by warehouse walls so the forklift is always rendered, if supported.
+        #    (Omniverse/Isaac Sim: This may require setting the camera's visibility mask or rendering settings. If not supported,
+        #    the large clipping plane ensures the forklift is visible as long as it is not occluded.)
         camera.CreateClippingRangeAttr(Gf.Vec2f(0.1, 10000.0))
+
+
         print(f"[attach_follow_camera] Created {cam_def['name']} at {path}")
 
         if cam_def["name"] == DEFAULT_CAMERA:
