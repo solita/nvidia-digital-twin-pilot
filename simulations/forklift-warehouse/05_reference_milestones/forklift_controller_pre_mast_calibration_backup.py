@@ -84,19 +84,19 @@ STATE_JSON = (
 # ── LIDAR sensor (2D, single horizontal ring) ─────────────────────────────────
 LIDAR_ENABLED      = True
 LIDAR_PRIM_PATH    = "/World/forklift_b/body/lidar"
-LIDAR_STOP_DIST    = 5.5    # metres — debounced forward stop
-LIDAR_SLOW_DIST    = 8.0    # metres — beginning of proportional speed ramp (widened for forks-side geometry)
+LIDAR_STOP_DIST    = 5.5    # metres — debounced forward stop (wider zone gives 2.7m turning window above 2.80m mast floor)
+LIDAR_SLOW_DIST    = 6.5    # metres — beginning of proportional speed ramp
 LIDAR_DRAW_LINES   = False   # set False to disable viewport ray visualisation
 LIDAR_FORWARD_RAY  = 359    # ray index pointing toward forks (body -X) — opposite of ray 179 (body +X)
 LIDAR_CONE_HALF    = 20     # half-width of forward detection cone in rays (degrees) — narrow to avoid self-hits during turns
-LIDAR_MIN_VALID    = 4.90   # metres — software floor for FORWARD cone; forks-side mast shadow reads ~4.7m (was 2.80 for cab-side)
+LIDAR_MIN_VALID    = 2.80   # metres — software floor for FORWARD cone (mast tip reads up to 2.72m with physics jitter)
 LIDAR_MIN_HIT_COUNT = 6    # minimum rays in forward cone that must read below STOP_DIST to confirm a real obstacle
                            # mast shadow = 1-5 rays (narrow strut); a 1m cube at 5m = ~11 rays
 LIDAR_REPULSE_GAIN  = 10.0  # deg·m — lateral repulsion gain for 1/d formula (K/d per sector)
 LIDAR_REPULSE_RANGE =  3.5  # m — max distance at which a sector obstacle contributes repulsion (shorter = less wall interference with PD heading correction)
 LIDAR_REPULSE_ARC   =  130  # deg — ±arc from forward scanned for lateral sectors (excludes directly behind)
 LIDAR_AVOID_STEER   =   8.0 # deg — open-side directional bias; kept low to prevent aisle drift overwhelming PD heading correction
-LIDAR_HARD_STOP_DIST =  5.1 # metres — full stop threshold: must be above LIDAR_MIN_VALID (4.90) to catch real close-range hits
+LIDAR_HARD_STOP_DIST =  3.2 # metres — full stop threshold: below this the FL halts completely to avoid pressing into obstacles
 LIDAR_FWDSTOP_SPEED =  0.40 # fraction of DRIVE_VELOCITY at STOP_DIST (ramp floor); overridden to 0 below HARD_STOP_DIST
 LIDAR_DEBOUNCE_FRAMES = 5   # consecutive frames forward obstacle must persist before triggering STOP
 STUCK_CHECK_FRAMES  =  180  # frames with no movement → trigger escape maneuver
@@ -428,8 +428,11 @@ async def run_forklift() -> None:
                 t          = max(0.0, min(1.0, (forward_min - LIDAR_STOP_DIST) / max(LIDAR_SLOW_DIST - LIDAR_STOP_DIST, 0.1)))
                 speed_frac = LIDAR_FWDSTOP_SPEED + t * (1.0 - LIDAR_FWDSTOP_SPEED)
             target_vel = DRIVE_VELOCITY * speed_frac * turn_scale
-            # Always use APF steer — STEER_MAX override caused spinning when false stop fired
-            final_steer = apf_steer
+            if lidar_fwd_stop and abs(heading_err) < 25.0:
+                # Confirmed stop, driving toward obstacle: apply STEER_MAX for maximum avoidance authority
+                final_steer = STEER_MAX if repulsion_steer >= 0 else -STEER_MAX
+            else:
+                final_steer = apf_steer
         else:
             scale       = min(1.0, frame / RAMP_FRAMES)
             target_vel  = DRIVE_VELOCITY * scale * turn_scale

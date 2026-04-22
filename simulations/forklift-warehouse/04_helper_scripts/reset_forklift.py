@@ -22,7 +22,7 @@ FORKLIFT_PRIM_PATH = "/World/forklift_b"
 REST_X       = -15.0
 REST_Y       = -17.5
 REST_Z       =  0.0
-REST_HEADING = -90.0   # south-facing: DRIVE_VELOCITY=+200 drives straight south toward WP0
+REST_HEADING = +90.0   # forks-forward: local -X points south toward WP0 at Y=-33
 
 # ── Cancel any running controller task ───────────────────────────────────────
 _TASK_KEY = "_forklift_controller_task"
