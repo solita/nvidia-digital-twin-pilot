@@ -90,7 +90,9 @@ LIDAR_DRAW_LINES   = False   # set False to disable viewport ray visualisation
 LIDAR_FORWARD_RAY  = 359    # ray index pointing toward forks (body -X) — opposite of ray 179 (body +X)
 LIDAR_CONE_HALF    = 20     # half-width of forward detection cone in rays (degrees) — narrow to avoid self-hits during turns
 LIDAR_MIN_VALID    = 0.80   # metres — software floor for FORWARD cone (sensor noise floor; was 4.90 which caused blind zone)
-LIDAR_MIN_HIT_COUNT = 10   # fork tines fill ~8 rays in ±20° cone; a 1m cube at 5m fills ~11 rays — 10 filters forks, catches cubes
+LIDAR_MIN_HIT_COUNT_NEAR =  4  # rays needed for close range (0.8–4.5m): narrow column fills ~5 rays → caught
+LIDAR_MIN_HIT_COUNT_FAR  = 10  # rays needed for fork-shadow zone (4.5–5.5m): fork tines fill ~8 rays → filtered; 1m cube = ~11 → caught
+LIDAR_FAR_FLOOR          = 4.5 # metres — boundary between near and far hit-count thresholds
 LIDAR_REPULSE_GAIN  = 10.0  # deg·m — lateral repulsion gain for 1/d formula (K/d per sector)
 LIDAR_REPULSE_RANGE =  3.5  # m — max distance at which a sector obstacle contributes repulsion (shorter = less wall interference with PD heading correction)
 LIDAR_REPULSE_ARC   =  130  # deg — ±arc from forward scanned for lateral sectors (excludes directly behind)
@@ -228,6 +230,7 @@ async def run_forklift() -> None:
     stuck_check_pos           = None  # (x, y) snapshot for stuck detection
     stuck_frames              = 0     # consecutive frames with no meaningful movement
     stuck_escape_frames       = 0     # countdown: >0 = executing escape maneuver
+    stuck_wp_count            = 0     # how many escape cycles fired at current wp_index without progress
     lost_heading_count        = 0     # frames where |err| > 150° (heading-loss detector)
     recovering_heading        = False # True while FL is spinning back on-axis
 
@@ -251,6 +254,7 @@ async def run_forklift() -> None:
         dist = math.hypot(wx - fx, wy - fy)
         if dist < ARRIVAL_RADIUS:
             _log("info", f"WP {wp_index} reached: ({wx},{wy})  lap={lap}", diag)
+            stuck_wp_count = 0   # reset per-WP stuck counter on successful arrival
             wp_index += 1
             if wp_index >= len(WAYPOINTS):
                 wp_index = 0
@@ -297,17 +301,18 @@ async def run_forklift() -> None:
                     if len(emerg_hits) >= 2:
                         forward_min = min(emerg_hits)  # overrides the main cone check below
 
-                    # Forward cone: minimum range for stop/slow (mast self-hit floor applied).
-                    # Only fire if >= LIDAR_MIN_HIT_COUNT rays agree — filters the narrow fork
-                    # shadow (~8 rays) while a real 1m cube at 5m fills ~11 rays.
+                    # Forward cone: two-tier hit-count threshold.
+                    # Near zone (0.8–4.5m): narrow rack column fills ~5 rays → threshold=4.
+                    # Far zone  (4.5–5.5m): fork tines fill ~8 rays → threshold=10; 1m cube=~11 → caught.
                     fwd_hits = [
                         flat[i % n]
                         for i in range(LIDAR_FORWARD_RAY - LIDAR_CONE_HALF,
                                        LIDAR_FORWARD_RAY + LIDAR_CONE_HALF + 1)
                         if math.isfinite(flat[i % n]) and flat[i % n] > LIDAR_MIN_VALID and flat[i % n] < 8.0
                     ]
-                    stop_hits = [d for d in fwd_hits if d < LIDAR_STOP_DIST]
-                    if len(stop_hits) >= LIDAR_MIN_HIT_COUNT:
+                    near_stop = [d for d in fwd_hits if d < min(LIDAR_STOP_DIST, LIDAR_FAR_FLOOR)]
+                    far_stop  = [d for d in fwd_hits if LIDAR_FAR_FLOOR <= d < LIDAR_STOP_DIST]
+                    if len(near_stop) >= LIDAR_MIN_HIT_COUNT_NEAR or len(far_stop) >= LIDAR_MIN_HIT_COUNT_FAR:
                         forward_min = min(forward_min, min(fwd_hits))  # take the closer of emergency or main cone
 
                     # Hysteresis debounce: count up immediately on each STOP frame,
@@ -397,13 +402,23 @@ async def run_forklift() -> None:
             else:
                 stuck_frames += 1
                 if stuck_frames == STUCK_CHECK_FRAMES:
-                    _log("warn", f"STUCK — escape maneuver at ({fx:.1f},{fy:.1f}) rep={repulsion_steer:+.1f}°", diag)
-                    stuck_escape_frames      = STUCK_ESCAPE_FRAMES
-                    stuck_frames             = 0
-                    stuck_check_pos          = (fx, fy)
-                    lidar_fwd_debounce_count = 0   # reset so LIDAR doesn't immediately re-lock after escape
-                    lidar_fwd_clear_count    = 0
-                    diag.flush()
+                    stuck_wp_count += 1
+                    if stuck_wp_count >= 5:
+                        # Completely blocked at this WP — skip to next and reset counter
+                        _log("warn", f"STUCK x5 at WP{wp_index} ({fx:.1f},{fy:.1f}) — skipping waypoint", diag)
+                        wp_index = (wp_index + 1) % len(WAYPOINTS)
+                        stuck_wp_count = 0
+                        stuck_frames   = 0
+                        stuck_check_pos = (fx, fy)
+                        diag.flush()
+                    else:
+                        _log("warn", f"STUCK — escape maneuver at ({fx:.1f},{fy:.1f}) rep={repulsion_steer:+.1f}°", diag)
+                        stuck_escape_frames      = STUCK_ESCAPE_FRAMES
+                        stuck_frames             = 0
+                        stuck_check_pos          = (fx, fy)
+                        lidar_fwd_debounce_count = 0   # reset so LIDAR doesn't immediately re-lock after escape
+                        lidar_fwd_clear_count    = 0
+                        diag.flush()
 
         # Escape maneuver: two-phase to break contact and steer clear
         # Phase 1 (first half): reverse slowly straight back to break physical contact with column/cube
@@ -414,8 +429,13 @@ async def run_forklift() -> None:
                 drive_api.GetTargetVelocityAttr().Set(abs(DRIVE_VELOCITY) * 0.40)
                 steer_api.GetTargetPositionAttr().Set(0.0)
             else:
-                # Phase 2: forward + open-side steer
-                escape_steer = STEER_MAX if repulsion_steer >= 0 else -STEER_MAX
+                # Phase 2: forward + open-side steer.
+                # If repulsion is negligible (no lateral obstacle detected), use heading_err
+                # to steer toward the target waypoint direction instead of a blind sign-flip.
+                if abs(repulsion_steer) < 1.0:
+                    escape_steer = STEER_MAX if heading_err > 0 else -STEER_MAX
+                else:
+                    escape_steer = STEER_MAX if repulsion_steer >= 0 else -STEER_MAX
                 drive_api.GetTargetVelocityAttr().Set(DRIVE_VELOCITY)
                 steer_api.GetTargetPositionAttr().Set(-escape_steer)  # forks-forward: negated
             stuck_escape_frames -= 1
