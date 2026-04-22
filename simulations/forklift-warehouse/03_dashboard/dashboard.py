@@ -58,6 +58,7 @@ _EMPTY_STATE: dict = {
     "forward_min": 9.9, "repulsion": 0.0,
     "speed_frac": 0.0,
     "waypoints": [],
+    "lidar_slices": [False, False, False, False, False, False, False, False, False],
 }
 
 
@@ -163,6 +164,8 @@ _HTML = r"""<!DOCTYPE html>
         <div class="legend-item"><div class="legend-swatch" style="background:#8b9ab0"></div>Fork tines →</div>
         <div class="legend-item"><div class="legend-swatch" style="background:#4a9eff"></div>Waypoints</div>
         <div class="legend-item"><div class="legend-swatch" style="background:#4caf7d55"></div>Trail</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:rgba(76,175,125,0.3)"></div>LIDAR clear</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:rgba(224,85,85,0.4)"></div>LIDAR hit</div>
       </div>
     </div>
     <div class="card">
@@ -483,6 +486,46 @@ function drawDynamic(data) {
   // ctx.rotate(-hdgRad) → local +X = body +X (cab), local -X = body -X (forks).
   // Canvas Y is flipped (south = canvas +Y), so negating hdgRad is the only correction needed.
   ctx.rotate(-hdgRad);
+
+  // LIDAR pie chart — 9 sectors showing obstacle detection around forklift
+  {
+    const sl = data.lidar_slices || [false,false,false,false,false,false,false,false,false];
+    const lr = worldToPixel(8);  // 8 m LIDAR range, to scale
+    const D  = Math.PI / 180;
+    const clr  = "rgba(76,175,125,0.15)";
+    const hitC = "rgba(224,85,85,0.22)";
+    const clrS = "rgba(76,175,125,0.30)";
+    const hitS = "rgba(224,85,85,0.45)";
+    const pie = [
+      // Front 3 slices
+      { s: Math.PI-20*D,     e: Math.PI-6.67*D,   h: sl[0] },  // front-left
+      { s: Math.PI-6.67*D,   e: Math.PI+6.67*D,   h: sl[1] },  // front-center
+      { s: Math.PI+6.67*D,   e: Math.PI+20*D,     h: sl[2] },  // front-right
+      // Right 2 slices
+      { s: Math.PI+20*D,     e: Math.PI+73.33*D,  h: sl[3] },  // right-front
+      { s: Math.PI+73.33*D,  e: Math.PI+126.67*D, h: sl[4] },  // right-back
+      // Back 2 slices
+      { s: Math.PI+126.67*D, e: Math.PI+180*D,    h: sl[5] },  // back-right
+      { s: Math.PI-180*D,    e: Math.PI-126.67*D, h: sl[6] },  // back-left
+      // Left 2 slices
+      { s: Math.PI-126.67*D, e: Math.PI-73.33*D,  h: sl[7] },  // left-back
+      { s: Math.PI-73.33*D,  e: Math.PI-20*D,     h: sl[8] },  // left-front
+    ];
+    pie.forEach(p => {
+      ctx.beginPath(); ctx.moveTo(0,0);
+      ctx.arc(0,0,lr,p.s,p.e); ctx.closePath();
+      ctx.fillStyle = p.h ? hitC : clr; ctx.fill();
+      ctx.strokeStyle = p.h ? hitS : clrS; ctx.lineWidth=1; ctx.stroke();
+    });
+    // Slice divider lines
+    [Math.PI-20*D, Math.PI-6.67*D, Math.PI+6.67*D, Math.PI+20*D,
+     Math.PI+73.33*D, Math.PI+126.67*D, Math.PI+180*D,
+     Math.PI-126.67*D, Math.PI-73.33*D].forEach(a => {
+      ctx.beginPath(); ctx.moveTo(0,0);
+      ctx.lineTo(Math.cos(a)*lr, Math.sin(a)*lr);
+      ctx.strokeStyle="rgba(200,200,200,0.18)"; ctx.lineWidth=1; ctx.stroke();
+    });
+  }
 
   // Shadow
   ctx.fillStyle = "rgba(0,0,0,0.35)";

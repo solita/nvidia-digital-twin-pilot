@@ -283,6 +283,7 @@ async def run_forklift() -> None:
         lidar_fwd_slow  = False
         repulsion_steer = 0.0
         forward_min     = 9.9
+        lidar_slices    = [False] * 9  # [FL,FC,FR, RF,RB, BR,BL, LB,LF] for dashboard pie chart
 
         if LIDAR_ENABLED and lidar_if is not None:
             try:
@@ -385,6 +386,36 @@ async def run_forklift() -> None:
                         # Single-frame detection: gentle 8° nudge toward the more open side
                         ro_right, ro_left = _open_side_scan()
                         repulsion_steer = 8.0 if ro_right >= ro_left else -8.0
+
+                    # Pie-chart slice obstacle flags for dashboard
+                    # 9 slices: front×3, right×2, back×2, left×2
+                    for i in range(n):
+                        d = flat[i]
+                        if not math.isfinite(d) or d <= 0.80 or d >= 8.0:
+                            continue
+                        offset = ((i - LIDAR_FORWARD_RAY) + 180) % 360 - 180
+                        # Front zone (±20°): skip fork self-hits
+                        if -20 <= offset <= 20:
+                            if d < LIDAR_MIN_VALID:
+                                continue
+                            if offset < -6.67:
+                                lidar_slices[0] = True   # front-left
+                            elif offset <= 6.67:
+                                lidar_slices[1] = True   # front-center
+                            else:
+                                lidar_slices[2] = True   # front-right
+                        elif 20 < offset <= 73.33:
+                            lidar_slices[3] = True   # right-front
+                        elif 73.33 < offset <= 126.67:
+                            lidar_slices[4] = True   # right-back
+                        elif offset > 126.67:
+                            lidar_slices[5] = True   # back-right
+                        elif offset < -126.67:
+                            lidar_slices[6] = True   # back-left
+                        elif -126.67 <= offset < -73.33:
+                            lidar_slices[7] = True   # left-back
+                        else:
+                            lidar_slices[8] = True   # left-front
 
             except Exception as exc:
                 _log("warn", f"LIDAR read error: {exc}", diag)
@@ -512,6 +543,7 @@ async def run_forklift() -> None:
                 "forward_min":  round(forward_min, 2),
                 "repulsion":    round(repulsion_steer, 1),
                 "speed_frac":   round(target_vel / DRIVE_VELOCITY, 2),
+                "lidar_slices": lidar_slices,
                 "waypoints":    WAYPOINTS,
             }
             try:
