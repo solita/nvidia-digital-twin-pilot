@@ -55,9 +55,13 @@ CAMERAS = [
 # Which camera to activate in the viewport after running
 DEFAULT_CAMERA = "CamBack"
 
+# Hide warehouse walls/ceiling so follow cameras always have line-of-sight to the forklift.
+HIDE_OCCLUDERS = False # TODO: use this to hide the warehouse walls/ceiling, which can occlude the cameras. 
+OCCLUDER_PREFIXES = ("SM_WallA_", "SM_WallWire_", "SM_CeilingA_")
+WAREHOUSE_PRIM_PATH = "/World/warehouse"
+
 # Legacy path to clean up
 _OLD_CAMERA_PATH = "/World/forklift_b/FollowCam"
-
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 stage = omni.usd.get_context().get_stage()
@@ -92,18 +96,28 @@ else:
         xform.AddRotateXYZOp().Set(cam_def["rotation"])
         camera.CreateFocalLengthAttr(24.0)
 
-        # --- Ensure forklift is always visible in the camera view ---
-        # 1. Set a very large far clipping plane so the forklift is visible even if camera is outside warehouse walls.
-        # 2. Attempt to disable occlusion by warehouse walls so the forklift is always rendered, if supported.
-        #    (Omniverse/Isaac Sim: This may require setting the camera's visibility mask or rendering settings. If not supported,
-        #    the large clipping plane ensures the forklift is visible as long as it is not occluded.)
+        # Keep a large far clipping plane, and hide warehouse occluders via HIDE_OCCLUDERS.
         camera.CreateClippingRangeAttr(Gf.Vec2f(0.1, 10000.0))
-
 
         print(f"[attach_follow_camera] Created {cam_def['name']} at {path}")
 
         if cam_def["name"] == DEFAULT_CAMERA:
             active_path = path
+
+    warehouse = stage.GetPrimAtPath(WAREHOUSE_PRIM_PATH)
+    if warehouse.IsValid():
+        count = 0
+        for child in warehouse.GetChildren():
+            if child.GetName().startswith(OCCLUDER_PREFIXES):
+                if HIDE_OCCLUDERS:
+                    UsdGeom.Imageable(child).MakeInvisible()
+                else:
+                    UsdGeom.Imageable(child).MakeVisible()
+                count += 1
+        if HIDE_OCCLUDERS:
+            print(f"[attach_follow_camera] HIDE_OCCLUDERS=True: hidden {count} warehouse occluder prim(s).")
+        else:
+            print(f"[attach_follow_camera] HIDE_OCCLUDERS=False: restored {count} warehouse occluder prim(s).")
 
     # Switch viewport to default camera
     viewport = omni.kit.viewport.utility.get_active_viewport()
@@ -113,4 +127,3 @@ else:
         print("  → Switch cameras via viewport top-left dropdown: CamBack / CamFront / CamLeft / CamRight / CamTop")
     else:
         print("[attach_follow_camera] WARNING: Could not switch viewport automatically.")
-
