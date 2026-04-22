@@ -104,6 +104,14 @@ STUCK_CHECK_FRAMES  =  180  # frames with no movement → trigger escape maneuve
 STUCK_ESCAPE_FRAMES =   80  # total escape: 40 frames reverse (break contact) + 40 frames forward (steer clear)
 STUCK_MIN_MOVE      =  0.10 # m — minimum displacement per STUCK_CHECK_FRAMES to reset counter
 
+# Forklift bounding-box safe zone — LIDAR hits inside this are self-hits on the
+# forklift's own collider/physics mesh and must be ignored.
+# Half-extents from get_warehouse_spatial_info.py + 0.15 m noise margin:
+#   Forks axis (body X):  3.031/2 = 1.516 m + 0.15 m = 1.67 m
+#   Lateral    (body Y):  1.130/2 = 0.565 m + 0.15 m = 0.72 m
+FORKLIFT_SAFE_HALF_FORKS   = 1.516 + 0.15
+FORKLIFT_SAFE_HALF_LATERAL = 0.565 + 0.15
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _get_world_transform(prim):
@@ -121,6 +129,27 @@ def _angle_diff(a: float, b: float) -> float:
     """Signed shortest-path difference a-b, wrapped to [-180, 180]."""
     d = (a - b + 180.0) % 360.0 - 180.0
     return d
+
+
+def _compute_lidar_safe_zone():
+    """Precompute per-ray minimum distance to exit the forklift bounding box.
+
+    For each of 360 rays, compute how far along that direction the ray must
+    travel to leave the forklift's own footprint rectangle.  Any LIDAR depth
+    shorter than this value is a self-hit on the forklift's collider mesh.
+    """
+    safe = []
+    for i in range(360):
+        alpha_rad = math.radians(((i - LIDAR_FORWARD_RAY) + 180) % 360 - 180)
+        ca = abs(math.cos(alpha_rad))
+        sa = abs(math.sin(alpha_rad))
+        dist_fwd = FORKLIFT_SAFE_HALF_FORKS / ca if ca > 1e-6 else 999.0
+        dist_lat = FORKLIFT_SAFE_HALF_LATERAL / sa if sa > 1e-6 else 999.0
+        safe.append(min(dist_fwd, dist_lat))
+    return safe
+
+
+_LIDAR_SAFE_ZONE = _compute_lidar_safe_zone()
 
 
 def _log(level: str, msg: str, diag=None) -> None:
@@ -291,6 +320,11 @@ async def run_forklift() -> None:
                 if depths is not None and depths.size >= 360:
                     flat = [float(d) for d in depths.flat]
                     n    = len(flat)
+
+                    # ── Self-hit filter: discard any depth inside the forklift bbox ──
+                    for _si in range(n):
+                        if flat[_si] < _LIDAR_SAFE_ZONE[_si % 360]:
+                            flat[_si] = float('inf')
 
                     # Emergency close-range check: bypass MIN_HIT_COUNT/MIN_VALID for very near obstacles.
                     # 2 rays in tight ±6° cone reading <2.5m = real physical contact threat regardless of fork shadow.
