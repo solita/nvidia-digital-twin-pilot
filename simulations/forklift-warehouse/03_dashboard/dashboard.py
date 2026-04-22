@@ -1,8 +1,12 @@
-"""dashboard.py — Forklift patrol dashboard.
+"""dashboard.py — Forklift patrol dashboard (top-down warehouse view).
 
 Reads forklift_state.json written by forklift_controller.py every 10 frames
-and serves a live browser UI showing the 2D warehouse floor map, forklift
-position/heading, waypoint route, and key metrics.
+and serves a live browser UI showing a to-scale top-down view of every asset
+in scene_assembly.usd: warehouse walls, rack shelving, structural columns,
+obstacle cubes, the forklift (live), waypoint route, and key metrics.
+
+Asset geometry is extracted from scene_assembly.usd and the controller's
+spatial calibration data so the map matches the physical simulation exactly.
 
 Run:
     cd simulations/forklift-warehouse/03_dashboard
@@ -50,12 +54,14 @@ _HTML = r"""<!DOCTYPE html>
 <title>Forklift Dashboard</title>
 <style>
   :root {
-    --bg:#1a1f2e; --card:#242b3d; --border:#2e3650;
+    --bg:#0f1219; --card:#1a1f2e; --border:#2e3650;
     --ink:#e8eaf0; --muted:#7a8299;
     --green:#4caf7d; --yellow:#f5c842; --red:#e05555; --blue:#4a9eff;
+    --floor:#1e2433; --wall:#3a4260; --rack:#5c3d1a; --column:#6b7a99;
+    --cube:#c05050; --forklift:#f5c842;
   }
   * { box-sizing:border-box; margin:0; padding:0; }
-  body { background:var(--bg); color:var(--ink); font-family:system-ui,sans-serif; }
+  body { background:var(--bg); color:var(--ink); font-family:'Inter',system-ui,sans-serif; }
   header {
     display:flex; align-items:center; gap:12px;
     padding:14px 24px; border-bottom:1px solid var(--border);
@@ -73,7 +79,7 @@ _HTML = r"""<!DOCTYPE html>
   }
   .map-wrap {
     background:var(--card); border:1px solid var(--border); border-radius:12px;
-    display:flex; flex-direction:column; overflow:hidden;
+    display:flex; flex-direction:column; overflow:hidden; position:relative;
   }
   .map-title { padding:10px 16px; font-size:0.8rem; color:var(--muted); border-bottom:1px solid var(--border); }
   canvas#map { flex:1; width:100%; display:block; }
@@ -90,6 +96,9 @@ _HTML = r"""<!DOCTYPE html>
   .progress-bar { height:8px; background:var(--border); border-radius:4px; overflow:hidden; margin-top:6px; }
   .progress-bar .fill { height:100%; background:var(--blue); border-radius:4px; transition:width .3s; }
   .footnote { font-size:0.72rem; color:var(--muted); margin-top:8px; }
+  .legend { display:flex; flex-wrap:wrap; gap:10px; }
+  .legend-item { display:flex; align-items:center; gap:5px; font-size:0.72rem; color:var(--muted); }
+  .legend-swatch { width:14px; height:10px; border-radius:2px; }
 </style>
 </head>
 <body>
@@ -100,15 +109,28 @@ _HTML = r"""<!DOCTYPE html>
     <circle cx="5.5" cy="18.5" r="2.5"/>
     <circle cx="18.5" cy="18.5" r="2.5"/>
   </svg>
-  <h1>Forklift Patrol Dashboard</h1>
+  <h1>Forklift Warehouse — Top-Down View</h1>
   <span class="pill" id="liveTag">LIVE</span>
 </header>
 <div class="layout">
   <div class="map-wrap">
-    <div class="map-title">Warehouse Floor Map — top-down (X east, Y north)</div>
+    <div class="map-title">scene_assembly.usd — All assets to scale (1 grid = 10 m) &nbsp;|&nbsp; X → east, Y ↑ north</div>
     <canvas id="map"></canvas>
   </div>
   <div class="sidebar">
+    <div class="card">
+      <div class="card-title">Scene Legend</div>
+      <div class="legend">
+        <div class="legend-item"><div class="legend-swatch" style="background:#2a3348;border:1px solid #3a4260"></div>Warehouse floor</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#3a4260"></div>Walls</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#5c3d1a"></div>Rack shelving</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#6b7a99"></div>Columns</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#c05050"></div>Obstacle cubes</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#f5c842"></div>Forklift</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#4a9eff"></div>Waypoints</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#4caf7d55"></div>Trail</div>
+      </div>
+    </div>
     <div class="card">
       <div class="card-title">Position &amp; Heading</div>
       <div class="metric-grid">
@@ -140,62 +162,246 @@ _HTML = r"""<!DOCTYPE html>
       <div class="val" id="vSpeed">--%</div>
       <div class="progress-bar"><div class="fill" id="speedBar" style="width:0%"></div></div>
     </div>
+    <div class="card">
+      <div class="card-title">Scene Assets</div>
+      <div style="font-size:0.75rem; color:var(--muted); line-height:1.6">
+        <div>/World/warehouse <span style="color:#5c8a5c">(payload)</span></div>
+        <div>/World/forklift_b <span style="color:#5c8a5c">(payload)</span></div>
+        <div>/World/Cube .. Cube_06 <span style="color:#c05050">×6 obstacles</span></div>
+        <div>/World/PhysicsScene</div>
+        <div>/World/PhysicsGround <span style="color:#555">(invisible)</span></div>
+      </div>
+    </div>
     <div class="footnote" id="updated">Waiting for simulation data...</div>
   </div>
 </div>
 <script>
-const WORLD = { xMin:-35, xMax:35, yMin:-45, yMax:60 };
+// ═══════════════════════════════════════════════════════════════════════
+// SCENE DATA — extracted from scene_assembly.usd & controller spatial
+// calibration.  All coordinates in world-space metres.
+//
+// Cardinal directions: +Y = north, -Y = south, +X = east, -X = west.
+// Warehouse long axis runs north–south (Y).
+// Long walls are the east (X) and west (-X) walls.
+// ═══════════════════════════════════════════════════════════════════════
+
+// /World/warehouse — Simple_Warehouse payload, translate (-0.50, -0.76),
+// scale (3.019, 3.004, 3.169).
+// Bounds derived from controller calibration:
+//   south floor boundary Y ≈ -36.4,  north wall Y ≈ 52.3
+//   west rack at X = -30.27 → west wall just behind ≈ X = -31.5
+//   easternmost column X = 26.52,  ~9 m buffer comment → east wall ≈ X = +28
+const WAREHOUSE = {
+  xMin: -31.5, xMax: 28.0,     // ~59.5 m east–west (short dimension)
+  yMin: -36.4, yMax: 52.3,     // ~88.7 m north–south (long dimension)
+  wallThickness: 0.8,
+};
+
+// Viewport — add padding around the warehouse so everything fits
+const VPAD = 5;
+const VIEW = {
+  xMin: WAREHOUSE.xMin - VPAD,
+  xMax: WAREHOUSE.xMax + VPAD,
+  yMin: WAREHOUSE.yMin - VPAD,
+  yMax: WAREHOUSE.yMax + VPAD,
+};
+
+// Interior rack shelving (from controller spatial calibration)
+// West rack: solid collision block against the west long wall
+const RACKS = [
+  { label:"West Rack", xMin:-30.27, xMax:-27.02, yMin:-12.06, yMax:36.38 },
+];
+
+// Structural columns — 0.60 m × 0.60 m pillars (full height Z).
+// 4 column rows at known X positions (from controller obstacle data).
+// Columns span Y from -27.80 (south end) to +45.12 (north end).
+// Individual pillar Y positions estimated from even spacing within that range.
+const COLUMN_ROWS_X = [-27.16, -4.37, 8.41, 26.52];
+const COLUMN_Y_MIN  = -27.80;
+const COLUMN_Y_MAX  =  45.12;
+const COLUMN_SPACING = 14.5;   // approximate Y spacing between pillars
+const COLUMN_SIZE    =  0.60;  // metres each side
+
+// Build individual column positions
+const COLUMNS = [];
+COLUMN_ROWS_X.forEach(cx => {
+  for (let y = COLUMN_Y_MIN; y <= COLUMN_Y_MAX + 0.1; y += COLUMN_SPACING) {
+    COLUMNS.push({ x: cx, y: y, w: COLUMN_SIZE, h: COLUMN_SIZE });
+  }
+});
+
+// /World/Cube .. /World/Cube_06 — 1 m³ obstacle mesh cubes (from USD)
+const CUBES = [
+  { label:"Cube",    x:-15.01, y:-23.87, size:1.0 },
+  { label:"Cube_01", x:-15.01, y:-26.38, size:1.0 },
+  { label:"Cube_02", x: -6.80, y:-26.54, size:1.0 },
+  { label:"Cube_03", x: -6.80, y:-27.56, size:1.0 },
+  { label:"Cube_04", x:-14.14, y:-29.98, size:1.0 },
+  { label:"Cube_06", x: -1.24, y:-33.05, size:1.0 },
+];
+
+// Forklift dimensions (metres) — from USD ForkliftB bbox
+const FL_WIDTH  = 3.03;   // X extent
+const FL_LENGTH = 4.00;   // Y extent (front-to-back)
+
+// ═══════════════════════════════════════════════════════════════════════
+// RENDERING
+// ═══════════════════════════════════════════════════════════════════════
+
 const canvas = document.getElementById("map");
 const ctx    = canvas.getContext("2d");
 const trail  = [];
-const TRAIL_MAX = 600;
+const TRAIL_MAX = 800;
 
-function toCanvas(wx, wy) {
+// ── Uniform-scale coordinate transform ───────────────────────────────
+// Uses a single px-per-metre scale so X and Y are never distorted.
+// The map is centred in the canvas; unused margins stay as background.
+let _scale = 1, _ox = 0, _oy = 0;  // computed each frame in resizeCanvas
+
+function computeTransform() {
   const W = canvas.width, H = canvas.height;
-  return [
-    (wx - WORLD.xMin) / (WORLD.xMax - WORLD.xMin) * W,
-    H - (wy - WORLD.yMin) / (WORLD.yMax - WORLD.yMin) * H
-  ];
+  const spanX = VIEW.xMax - VIEW.xMin;
+  const spanY = VIEW.yMax - VIEW.yMin;
+  _scale = Math.min(W / spanX, H / spanY);       // uniform px/m
+  _ox = (W - spanX * _scale) / 2;                 // centre horizontally
+  _oy = (H - spanY * _scale) / 2;                 // centre vertically
 }
 
-function drawMap(data) {
-  const W = canvas.width, H = canvas.height;
-  ctx.clearRect(0, 0, W, H);
+function toCanvas(wx, wy) {
+  return [
+    _ox + (wx - VIEW.xMin) * _scale,
+    _oy + (VIEW.yMax - wy) * _scale,              // Y flipped: north = up
+  ];
+}
+function worldToPixel(metres) {
+  return metres * _scale;
+}
 
-  // Background
-  ctx.fillStyle = "#1a1f2e";
+// Draw a world-space axis-aligned rect
+function drawRect(xMin, yMin, xMax, yMax, fill, stroke, lw) {
+  const [x1,y1] = toCanvas(xMin, yMax);  // top-left in canvas
+  const [x2,y2] = toCanvas(xMax, yMin);  // bottom-right in canvas
+  if (fill) { ctx.fillStyle = fill; ctx.fillRect(x1,y1,x2-x1,y2-y1); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw||1; ctx.strokeRect(x1,y1,x2-x1,y2-y1); }
+}
+
+// ── Static scene layer (redrawn every frame for simplicity) ──────────
+
+function drawScene() {
+  const W = canvas.width, H = canvas.height;
+  const sc = worldToPixel(1);  // pixels per metre
+
+  // Sky / outside
+  ctx.fillStyle = "#0f1219";
   ctx.fillRect(0, 0, W, H);
 
-  // Grid
-  ctx.strokeStyle = "#2e3650"; ctx.lineWidth = 1;
-  for (let x = Math.ceil(WORLD.xMin/10)*10; x <= WORLD.xMax; x += 10) {
+  // Warehouse floor
+  drawRect(WAREHOUSE.xMin, WAREHOUSE.yMin, WAREHOUSE.xMax, WAREHOUSE.yMax, "#1e2433", null);
+
+  // Grid lines (every 10 m)
+  ctx.strokeStyle = "#252d40"; ctx.lineWidth = 1;
+  for (let x = Math.ceil(VIEW.xMin/10)*10; x <= VIEW.xMax; x += 10) {
     const [cx] = toCanvas(x, 0);
     ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx,H); ctx.stroke();
   }
-  for (let y = Math.ceil(WORLD.yMin/10)*10; y <= WORLD.yMax; y += 10) {
+  for (let y = Math.ceil(VIEW.yMin/10)*10; y <= VIEW.yMax; y += 10) {
     const [,cy] = toCanvas(0, y);
     ctx.beginPath(); ctx.moveTo(0,cy); ctx.lineTo(W,cy); ctx.stroke();
   }
 
   // Axis labels
-  ctx.fillStyle = "#3a4260"; ctx.font = "10px system-ui";
+  ctx.fillStyle = "#3a4260"; ctx.font = "10px system-ui"; ctx.textBaseline = "alphabetic";
   ctx.textAlign = "center";
-  for (let x = -30; x <= 30; x += 10) {
-    const [cx,cy] = toCanvas(x, WORLD.yMin);
-    ctx.fillText(x, cx, cy - 4);
+  for (let x = Math.ceil(VIEW.xMin/10)*10; x <= VIEW.xMax; x += 10) {
+    const [cx,cy] = toCanvas(x, VIEW.yMin);
+    ctx.fillText(x+"m", cx, cy - 4);
   }
   ctx.textAlign = "right";
-  for (let y = -40; y <= 55; y += 10) {
-    const [cx,cy] = toCanvas(WORLD.xMin, y);
-    ctx.fillText(y, cx+18, cy+4);
+  for (let y = Math.ceil(VIEW.yMin/10)*10; y <= VIEW.yMax; y += 10) {
+    const [cx,cy] = toCanvas(VIEW.xMin, y);
+    ctx.fillText(y+"m", cx+22, cy+4);
   }
 
+  // Warehouse walls (thick outline)
+  const wt = WAREHOUSE.wallThickness;
+  ctx.fillStyle = "#3a4260";
+  // bottom wall
+  drawRect(WAREHOUSE.xMin, WAREHOUSE.yMin, WAREHOUSE.xMax, WAREHOUSE.yMin+wt, "#3a4260", null);
+  // top wall
+  drawRect(WAREHOUSE.xMin, WAREHOUSE.yMax-wt, WAREHOUSE.xMax, WAREHOUSE.yMax, "#3a4260", null);
+  // left wall
+  drawRect(WAREHOUSE.xMin, WAREHOUSE.yMin, WAREHOUSE.xMin+wt, WAREHOUSE.yMax, "#3a4260", null);
+  // right wall
+  drawRect(WAREHOUSE.xMax-wt, WAREHOUSE.yMin, WAREHOUSE.xMax, WAREHOUSE.yMax, "#3a4260", null);
+
+  // Rack shelving
+  RACKS.forEach(r => {
+    drawRect(r.xMin, r.yMin, r.xMax, r.yMax, "#3d2810", "#5c3d1a", 1.5);
+    // Hatching for shelves (horizontal lines every 4m)
+    ctx.strokeStyle = "#5c3d1a55"; ctx.lineWidth = 1;
+    for (let y = r.yMin+4; y < r.yMax; y += 4) {
+      const [lx,ly] = toCanvas(r.xMin, y);
+      const [rx]    = toCanvas(r.xMax, y);
+      ctx.beginPath(); ctx.moveTo(lx,ly); ctx.lineTo(rx,ly); ctx.stroke();
+    }
+    // Label
+    const [lx,ly] = toCanvas((r.xMin+r.xMax)/2, (r.yMin+r.yMax)/2);
+    ctx.save();
+    ctx.translate(lx,ly); ctx.rotate(-Math.PI/2);
+    ctx.fillStyle = "#8b6030"; ctx.font = "bold 11px system-ui";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(r.label, 0, 0);
+    ctx.restore();
+  });
+
+  // Columns
+  COLUMNS.forEach(c => {
+    const pw = Math.max(worldToPixel(c.w), 4);
+    const ph = Math.max(worldToPixel(c.h), 4);
+    const [cx,cy] = toCanvas(c.x, c.y);
+    ctx.fillStyle = "#6b7a99";
+    ctx.fillRect(cx-pw/2, cy-ph/2, pw, ph);
+    ctx.strokeStyle = "#8b9ab9"; ctx.lineWidth = 1;
+    ctx.strokeRect(cx-pw/2, cy-ph/2, pw, ph);
+  });
+
+  // Obstacle cubes
+  CUBES.forEach(c => {
+    const ps = Math.max(worldToPixel(c.size), 4);
+    const [cx,cy] = toCanvas(c.x, c.y);
+    ctx.fillStyle = "#c0505088";
+    ctx.fillRect(cx-ps/2, cy-ps/2, ps, ps);
+    ctx.strokeStyle = "#e06060"; ctx.lineWidth = 1.5;
+    ctx.strokeRect(cx-ps/2, cy-ps/2, ps, ps);
+    // Label
+    ctx.fillStyle = "#e8a0a0"; ctx.font = "9px system-ui";
+    ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+    ctx.fillText(c.label, cx, cy - ps/2 - 2);
+  });
+
+  // Scale bar (bottom-right of warehouse floor area)
+  const barM = 10;  // 10 metre scale bar
+  const barPx = worldToPixel(barM);
+  const bx = W - 30 - barPx;
+  const by = H - 20;
+  ctx.strokeStyle = "#7a8299"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(bx+barPx,by); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(bx,by-4); ctx.lineTo(bx,by+4); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(bx+barPx,by-4); ctx.lineTo(bx+barPx,by+4); ctx.stroke();
+  ctx.fillStyle = "#7a8299"; ctx.font = "11px system-ui";
+  ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+  ctx.fillText(barM+" m", bx+barPx/2, by-6);
+}
+
+// ── Dynamic overlay ──────────────────────────────────────────────────
+
+function drawDynamic(data) {
+  const sc = worldToPixel(1);
   const wps = data.waypoints || [];
-  const sc  = canvas.width / (WORLD.xMax - WORLD.xMin);
 
   // Patrol path dashed loop
   if (wps.length > 1) {
-    ctx.strokeStyle = "#2e3a50"; ctx.lineWidth = 2; ctx.setLineDash([6,4]);
+    ctx.strokeStyle = "#2e4a60"; ctx.lineWidth = 2; ctx.setLineDash([6,4]);
     ctx.beginPath();
     wps.forEach(([wx,wy], i) => {
       const [px,py] = toCanvas(wx, wy);
@@ -230,29 +436,50 @@ function drawMap(data) {
     ctx.fillText(idx, cx, cy);
   });
 
-  // Forklift rectangle + heading arrow
+  // Forklift — to-scale rectangle + heading arrow
+  if (data.x == null || data.y == null) return;
   const [fx, fy] = toCanvas(data.x, data.y);
   const hdgRad   = (data.heading * Math.PI) / 180;
-  const bW = 3.03 * sc, bL = 4.0 * sc;
+  const bW = FL_WIDTH  * sc;
+  const bL = FL_LENGTH * sc;
 
   ctx.save();
   ctx.translate(fx, fy);
-  ctx.rotate(-hdgRad);   // canvas Y is flipped → negate
+  ctx.rotate(-hdgRad - Math.PI / 2);   // canvas Y flipped + base offset so 0° = north (up)
+
+  // Shadow
+  ctx.fillStyle = "rgba(0,0,0,0.35)";
+  ctx.fillRect(-bL/2+2, -bW/2+2, bL, bW);
+
+  // Body
   ctx.fillStyle   = "#c8a832";
   ctx.strokeStyle = "#f5c842"; ctx.lineWidth = 2;
   ctx.beginPath();
   if (ctx.roundRect) ctx.roundRect(-bL/2, -bW/2, bL, bW, 3);
   else ctx.rect(-bL/2, -bW/2, bL, bW);
   ctx.fill(); ctx.stroke();
-  // Arrow
+
+  // Cab area (front 30%) — front is the lift/operator-cab side (-X local)
+  ctx.fillStyle = "#a08520";
+  ctx.fillRect(-bL/2, -bW/2, bL*0.30, bW);
+
+  // Heading arrow — points toward the front (lift / operator cab)
   ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(bL/2+6,0); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-bL/2-8,0); ctx.stroke();
   ctx.beginPath();
-  ctx.moveTo(bL/2+6,0); ctx.lineTo(bL/2+1,-4);
-  ctx.moveTo(bL/2+6,0); ctx.lineTo(bL/2+1,+4);
+  ctx.moveTo(-bL/2-8,0); ctx.lineTo(-bL/2-2,-4);
+  ctx.moveTo(-bL/2-8,0); ctx.lineTo(-bL/2-2,+4);
   ctx.stroke();
+
+  // Label
+  ctx.fillStyle = "#fff"; ctx.font = "bold 9px system-ui";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText("FL", 0, 0);
+
   ctx.restore();
 }
+
+// ── Sidebar updates ──────────────────────────────────────────────────
 
 function updateSidebar(data) {
   document.getElementById("vX").textContent     = data.x     != null ? data.x.toFixed(1)           + " m" : "--";
@@ -278,12 +505,15 @@ function updateSidebar(data) {
   document.getElementById("speedBar").style.width = sp + "%";
 }
 
+// ── Main loop ────────────────────────────────────────────────────────
+
 let lastFrame = -1, staleCount = 0;
 
 function resizeCanvas() {
   const rect = canvas.parentElement.getBoundingClientRect();
   canvas.width  = Math.floor(rect.width)  || 600;
   canvas.height = Math.floor(rect.height) - 36 || 400;
+  computeTransform();
 }
 
 async function refresh() {
@@ -292,7 +522,8 @@ async function refresh() {
     const data = await res.json();
     resizeCanvas();
     if (data.x != null) { trail.push([data.x, data.y]); if (trail.length > TRAIL_MAX) trail.shift(); }
-    drawMap(data);
+    drawScene();
+    drawDynamic(data);
     updateSidebar(data);
     if (data.frame !== lastFrame) { staleCount = 0; lastFrame = data.frame; } else staleCount++;
     const tag = document.getElementById("liveTag");
