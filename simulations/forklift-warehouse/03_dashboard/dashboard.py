@@ -126,7 +126,8 @@ _HTML = r"""<!DOCTYPE html>
         <div class="legend-item"><div class="legend-swatch" style="background:#5c3d1a"></div>Rack shelving</div>
         <div class="legend-item"><div class="legend-swatch" style="background:#6b7a99"></div>Columns</div>
         <div class="legend-item"><div class="legend-swatch" style="background:#c05050"></div>Obstacle cubes</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#f5c842"></div>Forklift</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#f5c842"></div>Forklift body</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#8b9ab0"></div>Fork tines →</div>
         <div class="legend-item"><div class="legend-swatch" style="background:#4a9eff"></div>Waypoints</div>
         <div class="legend-item"><div class="legend-swatch" style="background:#4caf7d55"></div>Trail</div>
       </div>
@@ -445,7 +446,10 @@ function drawDynamic(data) {
 
   ctx.save();
   ctx.translate(fx, fy);
-  ctx.rotate(-hdgRad - Math.PI / 2);   // canvas Y flipped + base offset so 0° = north (up)
+  // body +X = cab/counterweight end; body -X = forks/tines end (driving direction).
+  // ctx.rotate(-hdgRad) → local +X = body +X (cab), local -X = body -X (forks).
+  // Canvas Y is flipped (south = canvas +Y), so negating hdgRad is the only correction needed.
+  ctx.rotate(-hdgRad);
 
   // Shadow
   ctx.fillStyle = "rgba(0,0,0,0.35)";
@@ -459,22 +463,31 @@ function drawDynamic(data) {
   else ctx.rect(-bL/2, -bW/2, bL, bW);
   ctx.fill(); ctx.stroke();
 
-  // Cab area (front 30%) — front is the lift/operator-cab side (-X local)
+  // Cab / counterweight area (rear 30%) — body +X end = local +X = right side
   ctx.fillStyle = "#a08520";
-  ctx.fillRect(-bL/2, -bW/2, bL*0.30, bW);
+  ctx.fillRect(bL/2 - bL*0.30, -bW/2, bL*0.30, bW);
 
-  // Heading arrow — points toward the front (lift / operator cab)
+  // Fork tines — two thin rects extending from forks end (body -X = local -X = left side)
+  const tineL = bL * 0.55, tineW = bW * 0.11, tineGap = bW * 0.22;
+  ctx.fillStyle = "#8b9ab0"; ctx.strokeStyle = "#aabbd0"; ctx.lineWidth = 1;
+  [-tineGap, tineGap].forEach(offset => {
+    ctx.beginPath();
+    ctx.rect(-bL/2 - tineL, offset - tineW/2, tineL, tineW);
+    ctx.fill(); ctx.stroke();
+  });
+
+  // Direction arrow — points forks-forward (local -X = body -X = driving direction)
   ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-bL/2-8,0); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-bL/2 - tineL - 5, 0); ctx.stroke();
   ctx.beginPath();
-  ctx.moveTo(-bL/2-8,0); ctx.lineTo(-bL/2-2,-4);
-  ctx.moveTo(-bL/2-8,0); ctx.lineTo(-bL/2-2,+4);
+  ctx.moveTo(-bL/2 - tineL - 5, 0); ctx.lineTo(-bL/2 - tineL + 1, -4);
+  ctx.moveTo(-bL/2 - tineL - 5, 0); ctx.lineTo(-bL/2 - tineL + 1, +4);
   ctx.stroke();
 
   // Label
   ctx.fillStyle = "#fff"; ctx.font = "bold 9px system-ui";
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillText("FL", 0, 0);
+  ctx.fillText("FL", bL*0.10, 0);  // offset toward cab so tines don't overlap
 
   ctx.restore();
 }
