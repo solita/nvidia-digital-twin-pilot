@@ -63,12 +63,12 @@ HEADING_SMOOTH =   0.40   # EMA factor for heading (0=frozen, 1=raw) — filters
 #
 # REST_HEADING must be -90 deg so DRIVE_VELOCITY=+200 drives straight south to WP0.
 WAYPOINTS = [
-    ( -8.0, -26.0),   # WP0: south end        -- Y=-26 clears south wall (at Y=-36.4) by 10m, avoids cube at Y=-33
-    ( 17.0, -26.0),   # WP1: south-east       -- east in south cross-aisle (X=17: 9m from east column X=26.52)
+    (-15.0, -33.0),   # WP0: south end        -- actual south floor boundary ~Y=-36.4, 3m buffer
+    ( 17.0, -33.0),   # WP1: south-east       -- east in south cross-aisle (X=17: 9m from east column X=26.52)
     ( 17.0,  48.0),   # WP2: north-east       -- actual north wall ~Y=52.3, 4m buffer to turn
     (-24.0,  48.0),   # WP3: north-west       -- west in north cross-aisle
-    (-24.0, -26.0),   # WP4: south-west       -- south in west-center aisle, matched to new Y=-26 row
-    ( -8.0, -17.5),   # WP5: start zone       -- loops back to WP0
+    (-24.0, -33.0),   # WP4: south-west       -- south in west-center aisle
+    (-15.0, -17.5),   # WP5: start zone       -- loops back to WP0
 ]
 ARRIVAL_RADIUS = 2.5   # metres -- advance to next waypoint when within this (tighter = cleaner corners)
 
@@ -84,22 +84,23 @@ STATE_JSON = (
 # ── LIDAR sensor (2D, single horizontal ring) ─────────────────────────────────
 LIDAR_ENABLED      = True
 LIDAR_PRIM_PATH    = "/World/forklift_b/body/lidar"
-LIDAR_STOP_DIST    = 5.5    # metres — debounced forward stop
-LIDAR_SLOW_DIST    = 8.0    # metres — beginning of proportional speed ramp (widened for forks-side geometry)
+LIDAR_STOP_DIST    = 5.5    # metres — debounced forward stop (wider zone gives 2.7m turning window above 2.80m mast floor)
+LIDAR_SLOW_DIST    = 6.5    # metres — beginning of proportional speed ramp
 LIDAR_DRAW_LINES   = False   # set False to disable viewport ray visualisation
 LIDAR_FORWARD_RAY  = 359    # ray index pointing toward forks (body -X) — opposite of ray 179 (body +X)
 LIDAR_CONE_HALF    = 20     # half-width of forward detection cone in rays (degrees) — narrow to avoid self-hits during turns
-LIDAR_MIN_VALID    = 0.80   # metres — software floor for FORWARD cone (sensor noise floor; was 4.90 which caused blind zone)
-LIDAR_MIN_HIT_COUNT = 10   # fork tines fill ~8 rays in ±20° cone; a 1m cube at 5m fills ~11 rays — 10 filters forks, catches cubes
+LIDAR_MIN_VALID    = 2.80   # metres — software floor for FORWARD cone (mast tip reads up to 2.72m with physics jitter)
+LIDAR_MIN_HIT_COUNT = 6    # minimum rays in forward cone that must read below STOP_DIST to confirm a real obstacle
+                           # mast shadow = 1-5 rays (narrow strut); a 1m cube at 5m = ~11 rays
 LIDAR_REPULSE_GAIN  = 10.0  # deg·m — lateral repulsion gain for 1/d formula (K/d per sector)
 LIDAR_REPULSE_RANGE =  3.5  # m — max distance at which a sector obstacle contributes repulsion (shorter = less wall interference with PD heading correction)
 LIDAR_REPULSE_ARC   =  130  # deg — ±arc from forward scanned for lateral sectors (excludes directly behind)
 LIDAR_AVOID_STEER   =   8.0 # deg — open-side directional bias; kept low to prevent aisle drift overwhelming PD heading correction
-LIDAR_HARD_STOP_DIST =  2.5 # metres — full stop threshold: very close obstacle, halt immediately
+LIDAR_HARD_STOP_DIST =  3.2 # metres — full stop threshold: below this the FL halts completely to avoid pressing into obstacles
 LIDAR_FWDSTOP_SPEED =  0.40 # fraction of DRIVE_VELOCITY at STOP_DIST (ramp floor); overridden to 0 below HARD_STOP_DIST
 LIDAR_DEBOUNCE_FRAMES = 5   # consecutive frames forward obstacle must persist before triggering STOP
 STUCK_CHECK_FRAMES  =  180  # frames with no movement → trigger escape maneuver
-STUCK_ESCAPE_FRAMES =   80  # total escape: 40 frames reverse (break contact) + 40 frames forward (steer clear)
+STUCK_ESCAPE_FRAMES =  120  # total escape: 60 frames reverse (break contact) + 60 frames forward (steer clear)
 STUCK_MIN_MOVE      =  0.10 # m — minimum displacement per STUCK_CHECK_FRAMES to reset counter
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -228,8 +229,6 @@ async def run_forklift() -> None:
     stuck_check_pos           = None  # (x, y) snapshot for stuck detection
     stuck_frames              = 0     # consecutive frames with no meaningful movement
     stuck_escape_frames       = 0     # countdown: >0 = executing escape maneuver
-    lost_heading_count        = 0     # frames where |err| > 150° (heading-loss detector)
-    recovering_heading        = False # True while FL is spinning back on-axis
 
     while True:  # loop forever
         if not timeline.is_playing():
@@ -262,7 +261,7 @@ async def run_forklift() -> None:
         target_hdg = math.degrees(math.atan2(wy - fy, wx - fx))
         # Forks are the forward direction (body -X), which is 180° from the body +X axis
         # that smooth_heading tracks. Offset by 180° to get the true forks heading.
-        heading_err = _angle_diff(smooth_heading + 180.0, target_hdg)  # forks-forward: flipped args so positive err → negative steer_cmd → Set(+) → CCW
+        heading_err = _angle_diff(target_hdg, smooth_heading + 180.0)
 
         # ── PD steer command ──────────────────────────────────────────────────
         d_err      = heading_err - prev_heading_err
@@ -287,19 +286,9 @@ async def run_forklift() -> None:
                     flat = [float(d) for d in depths.flat]
                     n    = len(flat)
 
-                    # Emergency close-range check: bypass MIN_HIT_COUNT/MIN_VALID for very near obstacles.
-                    # 2 rays in tight ±6° cone reading <2.5m = real physical contact threat regardless of fork shadow.
-                    emerg_hits = [
-                        flat[i % n]
-                        for i in range(LIDAR_FORWARD_RAY - 6, LIDAR_FORWARD_RAY + 7)
-                        if math.isfinite(flat[i % n]) and 0.3 < flat[i % n] < 2.5
-                    ]
-                    if len(emerg_hits) >= 2:
-                        forward_min = min(emerg_hits)  # overrides the main cone check below
-
                     # Forward cone: minimum range for stop/slow (mast self-hit floor applied).
-                    # Only fire if >= LIDAR_MIN_HIT_COUNT rays agree — filters the narrow fork
-                    # shadow (~8 rays) while a real 1m cube at 5m fills ~11 rays.
+                    # Only fire if >= LIDAR_MIN_HIT_COUNT rays agree — filters the narrow mast
+                    # shadow (1-3 rays) while a real obstacle at 5m fills 10+ rays.
                     fwd_hits = [
                         flat[i % n]
                         for i in range(LIDAR_FORWARD_RAY - LIDAR_CONE_HALF,
@@ -307,8 +296,7 @@ async def run_forklift() -> None:
                         if math.isfinite(flat[i % n]) and flat[i % n] > LIDAR_MIN_VALID and flat[i % n] < 8.0
                     ]
                     stop_hits = [d for d in fwd_hits if d < LIDAR_STOP_DIST]
-                    if len(stop_hits) >= LIDAR_MIN_HIT_COUNT:
-                        forward_min = min(forward_min, min(fwd_hits))  # take the closer of emergency or main cone
+                    forward_min = min(fwd_hits) if len(stop_hits) >= LIDAR_MIN_HIT_COUNT else 9.9
 
                     # Hysteresis debounce: count up immediately on each STOP frame,
                     # but only count DOWN after 5 consecutive CLEAR frames.
@@ -423,28 +411,6 @@ async def run_forklift() -> None:
             await app.next_update_async()
             continue
 
-        # ── Heading recovery: if err ≈ ±180° the PD steer oscillates and the FL drives away ─
-        # Creep forward at low speed + full steer until back within 90° of target.
-        if recovering_heading:
-            if abs(heading_err) < 90.0:
-                recovering_heading = False
-                lost_heading_count = 0
-            else:
-                # heading_err < 0 (new convention) = forks need CCW = want Set(+) = -spin must be + = spin must be -
-                spin_steer = -STEER_MAX if heading_err < 0 else STEER_MAX
-                drive_api.GetTargetVelocityAttr().Set(DRIVE_VELOCITY * 0.20)
-                steer_api.GetTargetPositionAttr().Set(-spin_steer)
-                frame += 1
-                await app.next_update_async()
-                continue
-        elif abs(heading_err) > 150.0:
-            lost_heading_count += 1
-            if lost_heading_count >= 10:
-                _log("warn", f"HEADING LOST — recovery spin at ({fx:.1f},{fy:.1f}) err={heading_err:+.1f}°", diag)
-                recovering_heading = True
-        else:
-            lost_heading_count = max(0, lost_heading_count - 2)
-
         # APF-blended steer: PD attraction (toward waypoint) + repulsion (all obstacles/walls)
         apf_steer = max(-STEER_MAX, min(STEER_MAX, steer_cmd + repulsion_steer))
 
@@ -462,8 +428,11 @@ async def run_forklift() -> None:
                 t          = max(0.0, min(1.0, (forward_min - LIDAR_STOP_DIST) / max(LIDAR_SLOW_DIST - LIDAR_STOP_DIST, 0.1)))
                 speed_frac = LIDAR_FWDSTOP_SPEED + t * (1.0 - LIDAR_FWDSTOP_SPEED)
             target_vel = DRIVE_VELOCITY * speed_frac * turn_scale
-            # Always use APF steer — STEER_MAX override caused spinning when false stop fired
-            final_steer = apf_steer
+            if lidar_fwd_stop and abs(heading_err) < 25.0:
+                # Confirmed stop, driving toward obstacle: apply STEER_MAX for maximum avoidance authority
+                final_steer = STEER_MAX if repulsion_steer >= 0 else -STEER_MAX
+            else:
+                final_steer = apf_steer
         else:
             scale       = min(1.0, frame / RAMP_FRAMES)
             target_vel  = DRIVE_VELOCITY * scale * turn_scale
