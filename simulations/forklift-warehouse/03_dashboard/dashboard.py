@@ -15,11 +15,34 @@ Run:
 Then open http://<host>:8080 in a browser.
 """
 
+import asyncio
 import json
 import os
+import signal
+import subprocess
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
+
+PORT = 8080
+
+
+def _kill_existing_port_user() -> None:
+    """Kill any process already bound to PORT so uvicorn can start cleanly."""
+    try:
+        out = subprocess.check_output(
+            ["fuser", f"{PORT}/tcp"], stderr=subprocess.DEVNULL
+        ).decode().split()
+        my_pid = os.getpid()
+        for tok in out:
+            pid = int(tok)
+            if pid != my_pid:
+                os.kill(pid, signal.SIGKILL)
+    except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+        pass
+
+
+_kill_existing_port_user()
 
 STATE_FILE = (
     "/home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot/"
@@ -38,10 +61,20 @@ _EMPTY_STATE: dict = {
 }
 
 
+# ── Mtime-cached reader — only re-reads file when it changes on disk ──────────
+_cached_state: dict = _EMPTY_STATE
+_cached_mtime_ns: int = 0
+
+
 def _read_state() -> dict:
+    global _cached_state, _cached_mtime_ns
     try:
-        with open(STATE_FILE, encoding="utf-8") as fh:
-            return json.load(fh)
+        mt = os.stat(STATE_FILE).st_mtime_ns
+        if mt != _cached_mtime_ns:
+            with open(STATE_FILE, encoding="utf-8") as fh:
+                _cached_state = json.load(fh)
+            _cached_mtime_ns = mt
+        return _cached_state
     except Exception:
         return _EMPTY_STATE
 
@@ -529,35 +562,42 @@ function resizeCanvas() {
   computeTransform();
 }
 
-async function refresh() {
-  try {
-    const res  = await fetch("/api/state", { cache:"no-store" });
-    const data = await res.json();
-    resizeCanvas();
-    if (data.x != null) { trail.push([data.x, data.y]); if (trail.length > TRAIL_MAX) trail.shift(); }
-    drawScene();
-    drawDynamic(data);
-    updateSidebar(data);
-    if (data.frame !== lastFrame) { staleCount = 0; lastFrame = data.frame; } else staleCount++;
-    const tag = document.getElementById("liveTag");
-    if (staleCount > 4) { tag.textContent="STALE"; tag.className="pill stale"; }
-    else                { tag.textContent="LIVE";  tag.className="pill"; }
-    document.getElementById("updated").textContent = "Frame " + (data.frame || 0);
-  } catch(e) {
-    document.getElementById("updated").textContent = "Connection error — retrying...";
-  }
+function handleData(data) {
+  resizeCanvas();
+  if (data.x != null) { trail.push([data.x, data.y]); if (trail.length > TRAIL_MAX) trail.shift(); }
+  drawScene();
+  drawDynamic(data);
+  updateSidebar(data);
+  if (data.frame !== lastFrame) { staleCount = 0; lastFrame = data.frame; } else staleCount++;
+  const tag = document.getElementById("liveTag");
+  if (staleCount > 4) { tag.textContent="STALE"; tag.className="pill stale"; }
+  else                { tag.textContent="LIVE";  tag.className="pill"; }
+  document.getElementById("updated").textContent = "Frame " + (data.frame || 0);
+}
+
+// ── WebSocket with auto-reconnect ────────────────────────────────────
+function connectWS() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onmessage = (e) => { handleData(JSON.parse(e.data)); };
+  ws.onclose   = () => { setTimeout(connectWS, 1000); };
+  ws.onerror   = () => { ws.close(); };
 }
 
 window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
-refresh();
-setInterval(refresh, 200);
+connectWS();
 </script>
 </body>
 </html>"""
 
 
 app = FastAPI(title="Forklift Dashboard")
+
+
+@app.on_event("startup")
+async def _free_port():
+    _kill_existing_port_user()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -568,3 +608,21 @@ def index():
 @app.get("/api/state", response_class=JSONResponse)
 def get_state():
     return JSONResponse(_read_state())
+
+
+@app.websocket("/ws")
+async def ws_state(websocket: WebSocket):
+    await websocket.accept()
+    last_mtime: int = 0
+    try:
+        while True:
+            try:
+                mt = os.stat(STATE_FILE).st_mtime_ns
+            except OSError:
+                mt = 0
+            if mt != last_mtime:
+                last_mtime = mt
+                await websocket.send_json(_read_state())
+            await asyncio.sleep(0.05)  # 50 ms check interval
+    except WebSocketDisconnect:
+        pass
