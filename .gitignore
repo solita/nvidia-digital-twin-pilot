@@ -29,3 +29,28 @@ Thumbs.db
 # ── Isaac Sim / Omniverse cache ───────────────────────────────────────────────
 *.ov_cache
 .nvidia-omniverse/
+isaac-sim-cache/
+
+# ── Environment / secrets ─────────────────────────────────────────────────────
+.env
+fastdds_client_resolved.xml
+
+# ── Data / databases ──────────────────────────────────────────────────────────
+*.db
+*.db-wal
+*.db-shm
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+
+# ── ROS 2 build artifacts ────────────────────────────────────────────────────
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# ── Node / Dashboard ─────────────────────────────────────────────────────────
+dashboard/node_modules/
+dashboard/dist/
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.idea/

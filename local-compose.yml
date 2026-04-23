@@ -1,0 +1,56 @@
+services:
+  # --- Redis ---
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # --- Warehouse Manager ---
+  warehouse-manager:
+    build:
+      context: .
+      dockerfile: warehouse-manager/Dockerfile
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=42
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - ROS_DISCOVERY_SERVER=${BREV_TAILSCALE_IP}:11811
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/config/fastdds_client.xml
+      - REDIS_URL=redis://localhost:6379
+      - DATABASE_PATH=/data/warehouse.db
+    volumes:
+      - ./fastdds_client_resolved.xml:/config/fastdds_client.xml:ro
+      - warehouse-db:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # --- Dashboard (Phase 5+) ---
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+      - VITE_WS_URL=ws://localhost:8000/ws/live
+    depends_on:
+      - warehouse-manager
+    restart: unless-stopped
+    profiles:
+      - dashboard  # Only starts when explicitly requested
+
+volumes:
+  redis-data:
+  warehouse-db:

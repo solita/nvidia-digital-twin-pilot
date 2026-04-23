@@ -1,392 +1,543 @@
-"""
-main.py — Phase 2 Warehouse Manager: FastAPI + ROS 2 service.
+"""Warehouse Manager — FastAPI server with ROS 2 bridge.
 
-Architecture:
-  - FastAPI runs in the main asyncio event loop
-  - rclpy runs in a dedicated background thread with MultiThreadedExecutor
-  - Events are bridged via asyncio.Queue (ROS → FastAPI) and thread-safe calls
-
-Endpoints:
-  POST /orders          — Create a new order
-  GET  /orders          — List all orders
-  GET  /forklifts       — List forklift statuses
-  GET  /metrics         — Get current metrics
-  POST /reset           — Reset simulation
-  WS   /ws/live         — WebSocket for real-time updates
+Provides REST + WebSocket API for the dashboard and connects to
+the Isaac Sim forklift fleet via ROS 2 DDS (FastDDS discovery server).
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
-import math
-import sqlite3
-import threading
-import time
+import os
 import uuid
 from contextlib import asynccontextmanager
-from pathlib import Path
+from datetime import datetime, timezone
+from enum import IntEnum
 from typing import Any
 
+import redis.asyncio as aioredis
 import rclpy
-from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.parameter import Parameter
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from geometry_msgs.msg import Point, Pose
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from models import init_db, get_db
+from dispatcher import nearest_assign, batch_assign
+from scenario import ScenarioRecorder, save_scenario, load_scenario
 
-from geometry_msgs.msg import Point
-
+# ── Lazy-import warehouse_msgs (built at Docker image build time) ─────────────
+# fmt: off
 try:
-    from warehouse_msgs.msg import ForkliftStatus, TaskAssignment, TaskStatus
-    HAS_WAREHOUSE_MSGS = True
+    from warehouse_msgs.msg import ForkliftStatus as ForkliftStatusMsg
+    from warehouse_msgs.msg import TaskAssignment as TaskAssignmentMsg
+    from warehouse_msgs.msg import TaskStatus as TaskStatusMsg
+    HAS_MSGS = True
 except ImportError:
-    HAS_WAREHOUSE_MSGS = False
+    HAS_MSGS = False
+# fmt: on
 
 
-# ---------------------------------------------------------------------------
-# QoS
-# ---------------------------------------------------------------------------
+# ── Enums / config ───────────────────────────────────────────────────────────
 
-RELIABLE_QOS = QoSProfile(
-    reliability=ReliabilityPolicy.RELIABLE,
-    durability=DurabilityPolicy.TRANSIENT_LOCAL,
-    depth=10,
-)
-
-# ---------------------------------------------------------------------------
-# Database
-# ---------------------------------------------------------------------------
-
-DB_PATH = Path(__file__).parent / "warehouse.db"
-
-_DB_SCHEMA = """
-CREATE TABLE IF NOT EXISTS orders (
-    id TEXT PRIMARY KEY,
-    items TEXT NOT NULL,
-    priority INTEGER DEFAULT 1,
-    status TEXT DEFAULT 'pending',
-    created_at TEXT DEFAULT (datetime('now')),
-    completed_at TEXT
-);
-CREATE TABLE IF NOT EXISTS tasks (
-    id TEXT PRIMARY KEY,
-    order_id TEXT REFERENCES orders(id),
-    forklift_id TEXT,
-    task_type INTEGER,
-    source_x REAL, source_y REAL, source_z REAL,
-    dest_x REAL, dest_y REAL, dest_z REAL,
-    status TEXT DEFAULT 'pending',
-    created_at TEXT DEFAULT (datetime('now')),
-    completed_at TEXT
-);
-CREATE TABLE IF NOT EXISTS task_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id TEXT REFERENCES tasks(id),
-    event_type TEXT NOT NULL,
-    details TEXT,
-    timestamp TEXT DEFAULT (datetime('now'))
-);
-CREATE TABLE IF NOT EXISTS metrics_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    orders_completed INTEGER,
-    avg_fulfillment_secs REAL,
-    fleet_utilization REAL,
-    collision_count INTEGER,
-    snapshot_at TEXT DEFAULT (datetime('now'))
-);
-"""
+class ForkliftState(IntEnum):
+    IDLE = 0
+    NAVIGATING_TO_SHELF = 1
+    PICKING = 2
+    NAVIGATING_TO_DOCK = 3
+    DROPPING = 4
+    ERROR = 5
+    RECOVERING = 6
 
 
-def _init_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(_DB_SCHEMA)
-    return conn
+FORKLIFT_IDS = [f"forklift_{i}" for i in range(4)]
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+DISPATCH_STRATEGY = os.environ.get("DISPATCH_STRATEGY", "nearest")  # "nearest" | "batched"
 
 
-# ---------------------------------------------------------------------------
-# Shelf / dock layout (hardcoded for Phase 2, matches scene)
-# ---------------------------------------------------------------------------
+# ── In-memory state ──────────────────────────────────────────────────────────
 
-SHELVES = [
-    {"id": "shelf_0", "position": Point(x=5.0, y=10.0, z=0.0)},
-]
-DOCKS = [
-    {"id": "dock_0", "position": Point(x=5.0, y=2.0, z=0.0)},
-]
+forklifts: dict[str, dict[str, Any]] = {
+    fid: {
+        "forklift_id": fid,
+        "state": ForkliftState.IDLE,
+        "pose": {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0},
+        "battery_level": 100.0,
+        "current_task_id": None,
+        "paused": False,
+    }
+    for fid in FORKLIFT_IDS
+}
+
+ws_clients: set[WebSocket] = set()
+current_strategy: str = DISPATCH_STRATEGY
+recorder: ScenarioRecorder | None = None
 
 
-# ---------------------------------------------------------------------------
-# ROS 2 Node
-# ---------------------------------------------------------------------------
+# ── ROS 2 Node ───────────────────────────────────────────────────────────────
 
-class WarehouseManagerROS(Node):
-    def __init__(self, event_queue: asyncio.Queue):
-        super().__init__("warehouse_manager")
-        self._event_queue = event_queue
-        self._lock = threading.Lock()
+class WarehouseManagerNode(Node):
+    def __init__(self):
+        super().__init__(
+            "warehouse_manager",
+            parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)],
+        )
+        qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.VOLATILE)
 
-        # Forklift state cache
-        self.forklift_states: dict[str, dict[str, Any]] = {}
+        if HAS_MSGS:
+            # Subscribe to each forklift's status
+            for fid in FORKLIFT_IDS:
+                self.create_subscription(
+                    ForkliftStatusMsg,
+                    f"/{fid}/status",
+                    lambda msg, _fid=fid: self._on_forklift_status(msg, _fid),
+                    qos,
+                )
 
-        if not HAS_WAREHOUSE_MSGS:
-            self.get_logger().error("warehouse_msgs not available")
+            # Subscribe to task status feedback
+            self.create_subscription(TaskStatusMsg, "/warehouse/task_status", self._on_task_status, qos)
+
+            # Publisher for task assignments
+            self.task_pub = self.create_publisher(TaskAssignmentMsg, "/warehouse/task_assignment", qos)
+        else:
+            self.get_logger().warn("warehouse_msgs not found — running without ROS 2 message types")
+            self.task_pub = None
+
+        self.get_logger().info("WarehouseManagerNode started")
+
+    def _on_forklift_status(self, msg: Any, forklift_id: str):
+        forklifts[forklift_id].update(
+            {
+                "state": int(msg.state),
+                "pose": {
+                    "x": msg.pose.position.x,
+                    "y": msg.pose.position.y,
+                    "z": msg.pose.position.z,
+                    "yaw": 0.0,
+                },
+                "battery_level": msg.battery_level,
+                "current_task_id": msg.current_task_id or None,
+            }
+        )
+        asyncio.get_event_loop().call_soon_threadsafe(
+            asyncio.ensure_future,
+            broadcast({"type": "forklift_update", "data": forklifts[forklift_id]}),
+        )
+
+    def _on_task_status(self, msg: Any):
+        asyncio.get_event_loop().call_soon_threadsafe(
+            asyncio.ensure_future,
+            _handle_task_status(msg.task_id, msg.status, msg.forklift_id),
+        )
+
+    def publish_task(self, task_id: str, forklift_id: str, order_id: str, shelf: tuple, dock: tuple, priority: int = 1):
+        if not self.task_pub:
             return
-
-        self.task_pub = self.create_publisher(
-            TaskAssignment, "/warehouse/task_assignment", RELIABLE_QOS
-        )
-        self.create_subscription(
-            TaskStatus, "/warehouse/task_status",
-            self._task_status_cb, RELIABLE_QOS,
-        )
-        self.create_subscription(
-            ForkliftStatus, "/forklift_0/status",
-            self._forklift_status_cb, RELIABLE_QOS,
-        )
-        self.get_logger().info("WarehouseManagerROS node started")
-
-    def publish_task(self, task_id: str, order_id: str, forklift_id: str,
-                     task_type: int, source: Point, dest: Point,
-                     priority: int) -> None:
-        if not HAS_WAREHOUSE_MSGS:
-            return
-        msg = TaskAssignment()
+        msg = TaskAssignmentMsg()
         msg.task_id = task_id
-        msg.order_id = order_id
         msg.forklift_id = forklift_id
-        msg.task_type = task_type
-        msg.source = source
-        msg.destination = dest
+        msg.order_id = order_id
+        msg.shelf_position = Point(x=shelf[0], y=shelf[1], z=shelf[2])
+        msg.dock_position = Point(x=dock[0], y=dock[1], z=dock[2])
         msg.priority = priority
         self.task_pub.publish(msg)
+        self.get_logger().info(f"Published task {task_id} → {forklift_id}")
 
-    def _task_status_cb(self, msg: TaskStatus) -> None:
-        status_names = {0: "pending", 1: "in_progress", 2: "completed", 3: "failed"}
-        event = {
-            "type": "task_status",
-            "data": {
-                "task_id": msg.task_id,
-                "forklift_id": msg.forklift_id,
-                "status": status_names.get(msg.status, "unknown"),
-                "status_code": msg.status,
-            },
-        }
+
+ros_node: WarehouseManagerNode | None = None
+redis_client: aioredis.Redis | None = None
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+async def broadcast(message: dict):
+    """Send a JSON message to all connected WebSocket clients."""
+    data = json.dumps(message, default=str)
+    dead: list[WebSocket] = []
+    for ws in ws_clients:
         try:
-            self._event_queue.put_nowait(event)
-        except asyncio.QueueFull:
-            pass
-
-    def _forklift_status_cb(self, msg: ForkliftStatus) -> None:
-        q = msg.pose.orientation
-        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
-                         1.0 - 2.0 * (q.y ** 2 + q.z ** 2))
-        state_data = {
-            "forklift_id": msg.forklift_id,
-            "state": msg.state,
-            "x": msg.pose.position.x,
-            "y": msg.pose.position.y,
-            "yaw": yaw,
-            "battery": msg.battery_level,
-            "task_id": msg.current_task_id,
-        }
-        with self._lock:
-            self.forklift_states[msg.forklift_id] = state_data
-        event = {"type": "forklift_update", "data": state_data}
-        try:
-            self._event_queue.put_nowait(event)
-        except asyncio.QueueFull:
-            pass
-
-    def get_forklift_states(self) -> list[dict]:
-        with self._lock:
-            return list(self.forklift_states.values())
-
-    def get_idle_forklift(self) -> str | None:
-        with self._lock:
-            for fid, state in self.forklift_states.items():
-                if state.get("state") == 0:  # IDLE
-                    return fid
-        return "forklift_0"  # fallback for Phase 1
+            await ws.send_text(data)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        ws_clients.discard(ws)
 
 
-# ---------------------------------------------------------------------------
-# FastAPI app
-# ---------------------------------------------------------------------------
+async def _handle_task_status(task_id: str, status: str, forklift_id: str):
+    db = await get_db()
+    try:
+        completed_at = datetime.now(timezone.utc).isoformat() if status in ("completed", "failed", "cancelled") else None
+        await db.execute(
+            "UPDATE tasks SET status=?, completed_at=COALESCE(?, completed_at) WHERE id=?",
+            (status, completed_at, task_id),
+        )
 
-ros_node: WarehouseManagerROS | None = None
-event_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
-db: sqlite3.Connection | None = None
+        # If task completed, update order status
+        if status == "completed":
+            row = await db.execute("SELECT order_id FROM tasks WHERE id=?", (task_id,))
+            task_row = await row.fetchone()
+            if task_row:
+                await db.execute(
+                    "UPDATE orders SET status='completed', completed_at=? WHERE id=?",
+                    (completed_at, task_row["order_id"]),
+                )
+
+        await db.commit()
+    finally:
+        await db.close()
+
+    await broadcast({"type": "task_status", "data": {"task_id": task_id, "status": status, "forklift_id": forklift_id}})
+
+
+def _idle_forklifts() -> list[tuple[str, tuple[float, float]]]:
+    return [
+        (fid, (f["pose"]["x"], f["pose"]["y"]))
+        for fid, f in forklifts.items()
+        if f["state"] == ForkliftState.IDLE and not f["paused"]
+    ]
+
+
+# ── Lifespan ─────────────────────────────────────────────────────────────────
+
+def _spin_ros(node: Node):
+    """Blocking ROS 2 spin in a background thread."""
+    rclpy.spin(node)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    global ros_node, db
+async def lifespan(_app: FastAPI):
+    global ros_node, redis_client
 
-    db = _init_db()
+    # Init DB
+    await init_db()
 
-    if not rclpy.ok():
-        rclpy.init()
-    ros_node = WarehouseManagerROS(event_queue)
-    executor = MultiThreadedExecutor()
-    executor.add_node(ros_node)
-    ros_thread = threading.Thread(target=executor.spin, daemon=True)
-    ros_thread.start()
+    # Init Redis
+    redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
+
+    # Init ROS 2
+    rclpy.init()
+    ros_node = WarehouseManagerNode()
+
+    # Spin ROS 2 in a background thread
+    loop = asyncio.get_event_loop()
+    ros_task = loop.run_in_executor(None, _spin_ros, ros_node)
 
     yield
 
+    # Cleanup
     ros_node.destroy_node()
-    if rclpy.ok():
-        rclpy.shutdown()
-    if db:
-        db.close()
+    rclpy.shutdown()
+    if redis_client:
+        await redis_client.aclose()
 
 
-app = FastAPI(title="Warehouse Digital Twin", version="0.2.0", lifespan=lifespan)
+# ── FastAPI App ──────────────────────────────────────────────────────────────
+
+app = FastAPI(title="Warehouse Manager", version="0.1.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-# ---------------------------------------------------------------------------
-# Pydantic models
-# ---------------------------------------------------------------------------
-
-class OrderCreate(BaseModel):
-    items: list[str]
-    priority: int = 1
-
-
-# ---------------------------------------------------------------------------
-# REST endpoints
-# ---------------------------------------------------------------------------
-
-@app.post("/orders")
-async def create_order(order: OrderCreate):
-    order_id = str(uuid.uuid4())
-    items_json = json.dumps(order.items)
-
-    db.execute(
-        "INSERT INTO orders (id, items, priority) VALUES (?, ?, ?)",
-        (order_id, items_json, order.priority),
-    )
-    db.commit()
-
-    # Simple dispatcher: pick from first shelf, deliver to first dock
-    task_id = str(uuid.uuid4())
-    source = SHELVES[0]["position"]
-    dest = DOCKS[0]["position"]
-    forklift_id = ros_node.get_idle_forklift() if ros_node else "forklift_0"
-
-    db.execute(
-        "INSERT INTO tasks (id, order_id, forklift_id, task_type, "
-        "source_x, source_y, source_z, dest_x, dest_y, dest_z) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (task_id, order_id, forklift_id, 0,
-         source.x, source.y, source.z, dest.x, dest.y, dest.z),
-    )
-    db.commit()
-
-    # Publish via ROS 2
-    if ros_node:
-        ros_node.publish_task(
-            task_id=task_id,
-            order_id=order_id,
-            forklift_id=forklift_id,
-            task_type=0,
-            source=source,
-            dest=dest,
-            priority=order.priority,
-        )
-
-    return JSONResponse(
-        {"order_id": order_id, "task_id": task_id, "forklift_id": forklift_id},
-        status_code=201,
-    )
-
-
-@app.get("/orders")
-async def list_orders():
-    rows = db.execute("SELECT * FROM orders ORDER BY created_at DESC").fetchall()
-    return [dict(r) for r in rows]
-
+# ── REST Endpoints ───────────────────────────────────────────────────────────
 
 @app.get("/forklifts")
 async def list_forklifts():
-    if ros_node:
-        return ros_node.get_forklift_states()
-    return []
+    return list(forklifts.values())
+
+
+@app.get("/forklifts/{forklift_id}")
+async def get_forklift(forklift_id: str):
+    if forklift_id not in forklifts:
+        raise HTTPException(404, "Forklift not found")
+    return forklifts[forklift_id]
+
+
+@app.put("/forklifts/{forklift_id}/pause")
+async def pause_forklift(forklift_id: str):
+    if forklift_id not in forklifts:
+        raise HTTPException(404, "Forklift not found")
+    forklifts[forklift_id]["paused"] = True
+    await broadcast({"type": "forklift_update", "data": forklifts[forklift_id]})
+    return {"status": "paused", "forklift_id": forklift_id}
+
+
+@app.put("/forklifts/{forklift_id}/resume")
+async def resume_forklift(forklift_id: str):
+    if forklift_id not in forklifts:
+        raise HTTPException(404, "Forklift not found")
+    forklifts[forklift_id]["paused"] = False
+    await broadcast({"type": "forklift_update", "data": forklifts[forklift_id]})
+    return {"status": "resumed", "forklift_id": forklift_id}
+
+
+@app.post("/orders")
+async def create_order(body: dict):
+    items = body.get("items", [])
+    priority = body.get("priority", 1)
+    if not items:
+        raise HTTPException(400, "items required")
+
+    order_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT INTO orders (id, items, priority, status, created_at) VALUES (?, ?, ?, 'pending', ?)",
+            (order_id, json.dumps(items), priority, now),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+    order = {
+        "id": order_id,
+        "items": items,
+        "priority": priority,
+        "status": "pending",
+        "assigned_forklift": None,
+        "created_at": now,
+        "completed_at": None,
+    }
+
+    # Record if scenario recording is active
+    if recorder and recorder.is_recording:
+        recorder.record_order({"items": items, "priority": priority})
+
+    await broadcast({"type": "order_update", "data": order})
+
+    # Attempt immediate dispatch
+    await _try_dispatch(order_id, items, priority)
+
+    return order
+
+
+@app.get("/orders")
+async def list_orders(status: str | None = None):
+    db = await get_db()
+    try:
+        if status:
+            cursor = await db.execute("SELECT * FROM orders WHERE status=? ORDER BY created_at DESC", (status,))
+        else:
+            cursor = await db.execute("SELECT * FROM orders ORDER BY created_at DESC")
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": r["id"],
+                "items": json.loads(r["items"]),
+                "priority": r["priority"],
+                "status": r["status"],
+                "assigned_forklift": r["assigned_forklift"],
+                "created_at": r["created_at"],
+                "completed_at": r["completed_at"],
+            }
+            for r in rows
+        ]
+    finally:
+        await db.close()
+
+
+@app.delete("/tasks/{task_id}")
+async def cancel_task(task_id: str):
+    db = await get_db()
+    try:
+        await db.execute("UPDATE tasks SET status='cancelled', completed_at=? WHERE id=?", (datetime.now(timezone.utc).isoformat(), task_id))
+        await db.commit()
+    finally:
+        await db.close()
+    await broadcast({"type": "task_status", "data": {"task_id": task_id, "status": "cancelled", "forklift_id": ""}})
+    return {"status": "cancelled", "task_id": task_id}
 
 
 @app.get("/metrics")
 async def get_metrics():
-    completed = db.execute(
-        "SELECT COUNT(*) as c FROM orders WHERE status='completed'"
-    ).fetchone()["c"]
-    total = db.execute("SELECT COUNT(*) as c FROM orders").fetchone()["c"]
-    return {
-        "orders_completed": completed,
-        "orders_total": total,
-        "fleet_utilization": 0.0,  # TODO: compute from forklift states
-    }
+    db = await get_db()
+    try:
+        total_cur = await db.execute("SELECT COUNT(*) as cnt FROM orders")
+        total = (await total_cur.fetchone())["cnt"]
+
+        completed_cur = await db.execute("SELECT COUNT(*) as cnt FROM orders WHERE status='completed'")
+        completed = (await completed_cur.fetchone())["cnt"]
+
+        in_progress_cur = await db.execute("SELECT COUNT(*) as cnt FROM orders WHERE status='in_progress'")
+        in_progress = (await in_progress_cur.fetchone())["cnt"]
+
+        pending_cur = await db.execute("SELECT COUNT(*) as cnt FROM orders WHERE status='pending'")
+        pending = (await pending_cur.fetchone())["cnt"]
+
+        idle_count = sum(1 for f in forklifts.values() if f["state"] == ForkliftState.IDLE)
+
+        return {
+            "total_orders": total,
+            "completed_orders": completed,
+            "in_progress_orders": in_progress,
+            "pending_orders": pending,
+            "fleet_size": len(forklifts),
+            "idle_forklifts": idle_count,
+            "active_forklifts": len(forklifts) - idle_count,
+            "dispatch_strategy": current_strategy,
+        }
+    finally:
+        await db.close()
+
+
+@app.post("/config")
+async def update_config(body: dict):
+    global current_strategy
+    strategy = body.get("dispatch_strategy")
+    if strategy and strategy in ("nearest", "batched"):
+        current_strategy = strategy
+    return {"dispatch_strategy": current_strategy}
 
 
 @app.post("/reset")
 async def reset_simulation():
-    db.execute("UPDATE tasks SET status='cancelled' WHERE status IN ('pending','in_progress')")
-    db.execute("UPDATE orders SET status='cancelled' WHERE status IN ('pending','in_progress')")
-    db.commit()
-    return {"success": True, "message": "Reset complete"}
+    db = await get_db()
+    try:
+        await db.execute("UPDATE orders SET status='cancelled' WHERE status IN ('pending', 'in_progress')")
+        await db.execute("UPDATE tasks SET status='cancelled' WHERE status IN ('pending', 'in_progress')")
+        await db.commit()
+    finally:
+        await db.close()
 
+    for fid in forklifts:
+        forklifts[fid]["state"] = ForkliftState.IDLE
+        forklifts[fid]["current_task_id"] = None
+        forklifts[fid]["paused"] = False
+
+    await broadcast({"type": "reset", "data": {}})
+    return {"status": "reset"}
+
+
+# ── Scenario replay ──────────────────────────────────────────────────────────
+
+@app.post("/replay/start")
+async def replay_start(body: dict):
+    scenario_id = body.get("scenario")
+    if not scenario_id:
+        raise HTTPException(400, "scenario required")
+    try:
+        scenario = load_scenario(scenario_id)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Scenario '{scenario_id}' not found")
+
+    # Schedule order injection at recorded offsets
+    for event in scenario.events:
+        if event.type == "order":
+            asyncio.get_event_loop().call_later(
+                event.t_offset_ms / 1000.0,
+                lambda data=event.data: asyncio.ensure_future(create_order(data)),
+            )
+
+    return {"status": "replaying", "scenario_id": scenario_id, "events": len(scenario.events)}
+
+
+@app.post("/replay/stop")
+async def replay_stop():
+    # No active scheduled events tracking — future improvement
+    return {"status": "stopped"}
+
+
+@app.post("/record/start")
+async def record_start(body: dict):
+    global recorder
+    scenario_id = body.get("scenario_id", str(uuid.uuid4()))
+    recorder = ScenarioRecorder(scenario_id)
+    recorder.start()
+    return {"status": "recording", "scenario_id": scenario_id}
+
+
+@app.post("/record/stop")
+async def record_stop():
+    global recorder
+    if not recorder or not recorder.is_recording:
+        raise HTTPException(400, "No active recording")
+    scenario = recorder.stop()
+    filepath = save_scenario(scenario)
+    recorder = None
+    return {"status": "saved", "scenario_id": scenario.scenario_id, "path": str(filepath)}
+
+
+# ── Dispatch logic ───────────────────────────────────────────────────────────
+
+# Default shelf/dock positions (will be replaced by warehouse layout config)
+DEFAULT_SHELF_POS = (10.0, 5.0, 0.0)
+DEFAULT_DOCK_POS = (2.0, 25.0, 0.0)
+
+
+async def _try_dispatch(order_id: str, items: list, priority: int):
+    """Attempt to dispatch a pending order to an idle forklift."""
+    idle = _idle_forklifts()
+    if not idle:
+        return
+
+    # For single-order immediate dispatch, use nearest strategy
+    order_pos = DEFAULT_SHELF_POS[:2]
+    assignments = nearest_assign([(order_id, order_pos)], idle)
+
+    for forklift_id, assigned_order_id in assignments.items():
+        if assigned_order_id != order_id:
+            continue
+
+        task_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+
+        db = await get_db()
+        try:
+            await db.execute(
+                "INSERT INTO tasks (id, order_id, forklift_id, status, shelf_x, shelf_y, shelf_z, dock_x, dock_y, dock_z, created_at) "
+                "VALUES (?, ?, ?, 'in_progress', ?, ?, ?, ?, ?, ?, ?)",
+                (task_id, order_id, forklift_id, *DEFAULT_SHELF_POS, *DEFAULT_DOCK_POS, now),
+            )
+            await db.execute(
+                "UPDATE orders SET status='in_progress', assigned_forklift=? WHERE id=?",
+                (forklift_id, order_id),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
+        # Publish to ROS 2
+        if ros_node:
+            ros_node.publish_task(task_id, forklift_id, order_id, DEFAULT_SHELF_POS, DEFAULT_DOCK_POS, priority)
+
+        await broadcast({
+            "type": "order_update",
+            "data": {
+                "id": order_id,
+                "status": "in_progress",
+                "assigned_forklift": forklift_id,
+                "items": items,
+                "priority": priority,
+                "created_at": now,
+                "completed_at": None,
+            },
+        })
+        break
+
+
+# ── WebSocket ────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/live")
-async def websocket_live(websocket: WebSocket):
-    await websocket.accept()
+async def websocket_live(ws: WebSocket):
+    await ws.accept()
+    ws_clients.add(ws)
     try:
+        # Send current state snapshot on connect
+        await ws.send_text(json.dumps({"type": "snapshot", "data": {"forklifts": list(forklifts.values())}}, default=str))
+        # Keep connection alive, handle incoming commands
         while True:
-            try:
-                event = await asyncio.wait_for(event_queue.get(), timeout=1.0)
-                await websocket.send_json(event)
-            except asyncio.TimeoutError:
-                # Send heartbeat
-                await websocket.send_json({"type": "heartbeat"})
+            data = await ws.receive_text()
+            # WebSocket is server→client only for now; ignore client messages
     except WebSocketDisconnect:
         pass
-
-
-# ---------------------------------------------------------------------------
-# Event processor: update DB based on ROS events
-# ---------------------------------------------------------------------------
-
-async def _process_events():
-    """Background task that drains the event queue and updates the DB."""
-    while True:
-        event = await event_queue.get()
-        if event["type"] == "task_status":
-            data = event["data"]
-            status = data["status"]
-            task_id = data["task_id"]
-            completed_at = (
-                "datetime('now')" if status == "completed" else None
-            )
-            db.execute(
-                "UPDATE tasks SET status=? WHERE id=?",
-                (status, task_id),
-            )
-            if status == "completed":
-                db.execute(
-                    "UPDATE tasks SET completed_at=datetime('now') WHERE id=?",
-                    (task_id,),
-                )
-                # Also update the parent order
-                row = db.execute(
-                    "SELECT order_id FROM tasks WHERE id=?", (task_id,)
-                ).fetchone()
-                if row:
-                    db.execute(
-                        "UPDATE orders SET status='completed', "
-                        "completed_at=datetime('now') WHERE id=?",
-                        (row["order_id"],),
-                    )
-            db.commit()
+    finally:
+        ws_clients.discard(ws)
