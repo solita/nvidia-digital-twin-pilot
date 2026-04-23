@@ -1,0 +1,17 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+build/
+install/
+log/
+*.db
+simulations/concrete_spray
+simulations/_template
+smoke_test
+docs
+*.usd
+*.usda
+*.usdc
+!simulations/forklift-warehouse/01_scenes/

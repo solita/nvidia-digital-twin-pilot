@@ -1,0 +1,76 @@
+# brev-compose-phase4.yml — Brev-side compose for Phase 4+ split deployment
+#
+# Only Isaac Sim, vehicle controller, and FastDDS discovery server.
+# Warehouse manager runs on local machine.
+#
+# Usage:
+#   docker compose -f brev-compose-phase4.yml up --build -d
+
+services:
+  # --- FastDDS Discovery Server ---
+  discovery-server:
+    image: ros:humble
+    network_mode: host
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        fast-discovery-server -i 0 -p 11811
+      "
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ss -uln | grep -q 11811"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # --- Isaac Sim ---
+  isaac-sim:
+    image: nvcr.io/nvidia/isaac-sim:5.1.0
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - ACCEPT_EULA=Y
+      - ROS_DOMAIN_ID=42
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - ROS_DISCOVERY_SERVER=localhost:11811
+      - SCENE_USD=/sim-scripts/scenes/scene_assembly.usd
+    volumes:
+      - ./sim-scripts:/sim-scripts:ro
+      - ./simulations/forklift-warehouse/01_scenes:/sim-scripts/scenes:ro
+      - isaac-sim-cache:/isaac-sim/kit/cache
+    command: ./python.sh /sim-scripts/warehouse_scene.py --headless
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # --- Vehicle Controller ---
+  vehicle-controller:
+    build:
+      context: .
+      dockerfile: vehicle-controller/Dockerfile
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=42
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - ROS_DISCOVERY_SERVER=localhost:11811
+      - NUM_FORKLIFTS=4
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        source /ros2_ws/install/setup.bash &&
+        ros2 launch vehicle_controller multi_forklift.launch.py
+      "
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  isaac-sim-cache:

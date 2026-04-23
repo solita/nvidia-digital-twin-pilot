@@ -1,0 +1,114 @@
+# brev-compose.yml — All-in-one compose for Brev instance (Phases 1–3)
+#
+# Services:
+#   discovery-server  — FastDDS discovery server for ROS 2
+#   isaac-sim         — Isaac Sim headless with ROS 2 bridge
+#   vehicle-controller — Forklift controller ROS 2 node(s)
+#   warehouse-manager  — FastAPI + ROS 2 warehouse manager (Phase 2)
+#   redis             — Redis for hot state and pub/sub
+#
+# Usage:
+#   docker compose -f brev-compose.yml up --build -d
+#   docker compose -f brev-compose.yml logs -f
+
+services:
+  # --- FastDDS Discovery Server ---
+  discovery-server:
+    image: ros:humble
+    network_mode: host
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        fast-discovery-server -i 0 -p 11811
+      "
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ss -uln | grep -q 11811"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # --- Isaac Sim ---
+  isaac-sim:
+    image: nvcr.io/nvidia/isaac-sim:5.1.0
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - ACCEPT_EULA=Y
+      - ROS_DOMAIN_ID=42
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - ROS_DISCOVERY_SERVER=localhost:11811
+      - SCENE_USD=/sim-scripts/scenes/scene_assembly.usd
+    volumes:
+      - ./sim-scripts:/sim-scripts:ro
+      - ./simulations/forklift-warehouse/01_scenes:/sim-scripts/scenes:ro
+      - isaac-sim-cache:/isaac-sim/kit/cache
+    command: ./python.sh /sim-scripts/warehouse_scene.py --headless
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # --- Vehicle Controller ---
+  vehicle-controller:
+    build:
+      context: .
+      dockerfile: vehicle-controller/Dockerfile
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=42
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - ROS_DISCOVERY_SERVER=localhost:11811
+      - NUM_FORKLIFTS=1
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        source /ros2_ws/install/setup.bash &&
+        ros2 launch vehicle_controller multi_forklift.launch.py
+      "
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # --- Warehouse Manager (Phase 2) ---
+  warehouse-manager:
+    build:
+      context: .
+      dockerfile: warehouse-manager/Dockerfile
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=42
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - ROS_DISCOVERY_SERVER=localhost:11811
+      - REDIS_URL=redis://localhost:6379
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        source /ros2_ws/install/setup.bash &&
+        uvicorn main:app --host 0.0.0.0 --port 8000
+      "
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # --- Redis ---
+  redis:
+    image: redis:7-alpine
+    network_mode: host
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  isaac-sim-cache:

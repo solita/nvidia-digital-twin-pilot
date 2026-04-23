@@ -1,0 +1,4 @@
+bool clear_orders
+---
+bool success
+string message
