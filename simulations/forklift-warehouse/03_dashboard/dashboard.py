@@ -160,6 +160,8 @@ _HTML = r"""<!DOCTYPE html>
         <div class="legend-item"><div class="legend-swatch" style="background:#5c3d1a"></div>Rack shelving</div>
         <div class="legend-item"><div class="legend-swatch" style="background:#6b7a99"></div>Columns</div>
         <div class="legend-item"><div class="legend-swatch" style="background:#c05050"></div>Obstacle cubes</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#ff8c00"></div>Traffic cones</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#8c5a28"></div>Cardboard boxes</div>
         <div class="legend-item"><div class="legend-swatch" style="background:#f5c842"></div>Forklift body</div>
         <div class="legend-item"><div class="legend-swatch" style="background:#8b9ab0"></div>Fork tines →</div>
         <div class="legend-item"><div class="legend-swatch" style="background:#4a9eff"></div>Waypoints</div>
@@ -205,6 +207,7 @@ _HTML = r"""<!DOCTYPE html>
         <div>/World/warehouse <span style="color:#5c8a5c">(payload)</span></div>
         <div>/World/forklift_b <span style="color:#5c8a5c">(payload)</span></div>
         <div>/World/Cube .. Cube_06 <span style="color:#c05050">×6 obstacles</span></div>
+        <div>/World/Obstacles <span style="color:#ff8c00">×14 path obstacles</span></div>
         <div>/World/PhysicsScene</div>
         <div>/World/PhysicsGround <span style="color:#555">(invisible)</span></div>
       </div>
@@ -275,6 +278,25 @@ const CUBES = [
   { label:"Cube_03", x: -6.80, y:-27.56, size:1.0 },
   { label:"Cube_04", x:-14.14, y:-29.98, size:1.0 },
   { label:"Cube_06", x: -1.24, y:-33.05, size:1.0 },
+];
+
+// /World/Obstacles — spawned by spawn_path_obstacles.py
+// Traffic cones (≈0.75 m tall, 0.25 m radius) and cardboard boxes (≈0.4–0.6 m)
+const PATH_OBSTACLES = [
+  { kind:"cone", x:  0.0,  y:-24.8 },
+  { kind:"box",  x:  6.0,  y:-27.2 },
+  { kind:"cone", x: 12.0,  y:-24.6 },
+  { kind:"box",  x: 18.5,  y: -5.0 },
+  { kind:"cone", x: 15.5,  y: 15.0 },
+  { kind:"box",  x: 18.2,  y: 30.0 },
+  { kind:"cone", x: 10.0,  y: 46.5 },
+  { kind:"box",  x:  0.0,  y: 49.5 },
+  { kind:"cone", x:-12.0,  y: 46.4 },
+  { kind:"box",  x:-22.5,  y: 30.0 },
+  { kind:"cone", x:-25.5,  y: 10.0 },
+  { kind:"box",  x:-22.8,  y:-10.0 },
+  { kind:"cone", x:-17.0,  y:-22.0 },
+  { kind:"box",  x:-12.0,  y:-20.0 },
 ];
 
 // Forklift dimensions (metres) — from USD ForkliftB bbox
@@ -414,6 +436,33 @@ function drawScene() {
     ctx.fillStyle = "#e8a0a0"; ctx.font = "9px system-ui";
     ctx.textAlign = "center"; ctx.textBaseline = "bottom";
     ctx.fillText(c.label, cx, cy - ps/2 - 2);
+  });
+
+  // Path obstacles (cones & boxes from spawn_path_obstacles.py)
+  PATH_OBSTACLES.forEach(o => {
+    const [cx, cy] = toCanvas(o.x, o.y);
+    if (o.kind === "cone") {
+      // Orange triangle (top-down view of a traffic cone)
+      const r = Math.max(worldToPixel(0.35), 5);
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - r);
+      ctx.lineTo(cx - r * 0.866, cy + r * 0.5);
+      ctx.lineTo(cx + r * 0.866, cy + r * 0.5);
+      ctx.closePath();
+      ctx.fillStyle = "rgba(255,140,0,0.7)";
+      ctx.fill();
+      ctx.strokeStyle = "#ff8c00";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    } else {
+      // Brown rectangle (top-down view of a cardboard box)
+      const ps = Math.max(worldToPixel(0.5), 5);
+      ctx.fillStyle = "rgba(140,90,40,0.7)";
+      ctx.fillRect(cx - ps / 2, cy - ps / 2, ps, ps);
+      ctx.strokeStyle = "#a06828";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(cx - ps / 2, cy - ps / 2, ps, ps);
+    }
   });
 
   // Scale bar (bottom-right of warehouse floor area)
