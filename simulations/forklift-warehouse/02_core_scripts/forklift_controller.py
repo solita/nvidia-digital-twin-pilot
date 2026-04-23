@@ -97,12 +97,21 @@ LIDAR_REPULSE_GAIN  = 10.0  # deg·m — lateral repulsion gain for 1/d formula 
 LIDAR_REPULSE_RANGE =  3.5  # m — max distance at which a sector obstacle contributes repulsion (shorter = less wall interference with PD heading correction)
 LIDAR_REPULSE_ARC   =  130  # deg — ±arc from forward scanned for lateral sectors (excludes directly behind)
 LIDAR_AVOID_STEER   =   8.0 # deg — open-side directional bias; kept low to prevent aisle drift overwhelming PD heading correction
+LIDAR_SIDE_BACK_RANGE = 4.0 # metres — reduced detection range for side/back sectors (half of front 8.0 m)
 LIDAR_HARD_STOP_DIST =  2.5 # metres — full stop threshold: very close obstacle, halt immediately
 LIDAR_FWDSTOP_SPEED =  0.40 # fraction of DRIVE_VELOCITY at STOP_DIST (ramp floor); overridden to 0 below HARD_STOP_DIST
 LIDAR_DEBOUNCE_FRAMES = 5   # consecutive frames forward obstacle must persist before triggering STOP
 STUCK_CHECK_FRAMES  =  180  # frames with no movement → trigger escape maneuver
 STUCK_ESCAPE_FRAMES =   80  # total escape: 40 frames reverse (break contact) + 40 frames forward (steer clear)
 STUCK_MIN_MOVE      =  0.10 # m — minimum displacement per STUCK_CHECK_FRAMES to reset counter
+
+# Forklift bounding-box safe zone — LIDAR hits inside this are self-hits on the
+# forklift's own collider/physics mesh and must be ignored.
+# Half-extents from get_warehouse_spatial_info.py + 0.15 m noise margin:
+#   Forks axis (body X):  3.031/2 = 1.516 m + 0.15 m = 1.67 m
+#   Lateral    (body Y):  1.130/2 = 0.565 m + 0.15 m = 0.72 m
+FORKLIFT_SAFE_HALF_FORKS   = 1.516 + 0.15
+FORKLIFT_SAFE_HALF_LATERAL = 0.565 + 0.15
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -121,6 +130,27 @@ def _angle_diff(a: float, b: float) -> float:
     """Signed shortest-path difference a-b, wrapped to [-180, 180]."""
     d = (a - b + 180.0) % 360.0 - 180.0
     return d
+
+
+def _compute_lidar_safe_zone():
+    """Precompute per-ray minimum distance to exit the forklift bounding box.
+
+    For each of 360 rays, compute how far along that direction the ray must
+    travel to leave the forklift's own footprint rectangle.  Any LIDAR depth
+    shorter than this value is a self-hit on the forklift's collider mesh.
+    """
+    safe = []
+    for i in range(360):
+        alpha_rad = math.radians(((i - LIDAR_FORWARD_RAY) + 180) % 360 - 180)
+        ca = abs(math.cos(alpha_rad))
+        sa = abs(math.sin(alpha_rad))
+        dist_fwd = FORKLIFT_SAFE_HALF_FORKS / ca if ca > 1e-6 else 999.0
+        dist_lat = FORKLIFT_SAFE_HALF_LATERAL / sa if sa > 1e-6 else 999.0
+        safe.append(min(dist_fwd, dist_lat))
+    return safe
+
+
+_LIDAR_SAFE_ZONE = _compute_lidar_safe_zone()
 
 
 def _log(level: str, msg: str, diag=None) -> None:
@@ -283,6 +313,7 @@ async def run_forklift() -> None:
         lidar_fwd_slow  = False
         repulsion_steer = 0.0
         forward_min     = 9.9
+        lidar_slices    = [False] * 9  # [FL,FC,FR, RF,RB, BR,BL, LB,LF] for dashboard pie chart
 
         if LIDAR_ENABLED and lidar_if is not None:
             try:
@@ -290,6 +321,17 @@ async def run_forklift() -> None:
                 if depths is not None and depths.size >= 360:
                     flat = [float(d) for d in depths.flat]
                     n    = len(flat)
+
+                    # ── Self-hit filter: discard any depth inside the forklift bbox ──
+                    for _si in range(n):
+                        if flat[_si] < _LIDAR_SAFE_ZONE[_si % 360]:
+                            flat[_si] = float('inf')
+
+                    # ── Side/back range cap: halve detection range outside front cone ──
+                    for _si in range(n):
+                        _off = ((_si - LIDAR_FORWARD_RAY) + 180) % 360 - 180
+                        if abs(_off) > LIDAR_CONE_HALF and flat[_si] > LIDAR_SIDE_BACK_RANGE:
+                            flat[_si] = float('inf')
 
                     # Emergency close-range check: bypass MIN_HIT_COUNT/MIN_VALID for very near obstacles.
                     # 2 rays in tight ±6° cone reading <2.5m = real physical contact threat regardless of fork shadow.
@@ -385,6 +427,36 @@ async def run_forklift() -> None:
                         # Single-frame detection: gentle 8° nudge toward the more open side
                         ro_right, ro_left = _open_side_scan()
                         repulsion_steer = 8.0 if ro_right >= ro_left else -8.0
+
+                    # Pie-chart slice obstacle flags for dashboard
+                    # 9 slices: front×3, right×2, back×2, left×2
+                    for i in range(n):
+                        d = flat[i]
+                        if not math.isfinite(d) or d <= 0.80 or d >= 8.0:
+                            continue
+                        offset = ((i - LIDAR_FORWARD_RAY) + 180) % 360 - 180
+                        # Front zone (±20°): skip fork self-hits
+                        if -20 <= offset <= 20:
+                            if d < LIDAR_MIN_VALID:
+                                continue
+                            if offset < -6.67:
+                                lidar_slices[0] = True   # front-left
+                            elif offset <= 6.67:
+                                lidar_slices[1] = True   # front-center
+                            else:
+                                lidar_slices[2] = True   # front-right
+                        elif 20 < offset <= 73.33:
+                            lidar_slices[3] = True   # right-front
+                        elif 73.33 < offset <= 126.67:
+                            lidar_slices[4] = True   # right-back
+                        elif offset > 126.67:
+                            lidar_slices[5] = True   # back-right
+                        elif offset < -126.67:
+                            lidar_slices[6] = True   # back-left
+                        elif -126.67 <= offset < -73.33:
+                            lidar_slices[7] = True   # left-back
+                        else:
+                            lidar_slices[8] = True   # left-front
 
             except Exception as exc:
                 _log("warn", f"LIDAR read error: {exc}", diag)
@@ -512,6 +584,7 @@ async def run_forklift() -> None:
                 "forward_min":  round(forward_min, 2),
                 "repulsion":    round(repulsion_steer, 1),
                 "speed_frac":   round(target_vel / DRIVE_VELOCITY, 2),
+                "lidar_slices": lidar_slices,
                 "waypoints":    WAYPOINTS,
             }
             try:
