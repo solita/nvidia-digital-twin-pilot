@@ -23,7 +23,7 @@ services:
       "
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "ss -uln | grep -q 11811"]
+      test: ["CMD-SHELL", "grep -q 2E23 /proc/net/udp"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -46,10 +46,10 @@ services:
       - ROS_DISCOVERY_SERVER=localhost:11811
       - SCENE_USD=/sim-scripts/scenes/scene_assembly.usd
     volumes:
-      - ./sim-scripts:/sim-scripts:ro
+      - ./sim-scripts:/sim-scripts
       - ./simulations/forklift-warehouse/01_scenes:/sim-scripts/scenes:ro
       - isaac-sim-cache:/isaac-sim/kit/cache
-    command: ./python.sh /sim-scripts/warehouse_scene.py --headless
+    command: --exec "/sim-scripts/warehouse_scene_streaming.py"
     depends_on:
       discovery-server:
         condition: service_healthy
