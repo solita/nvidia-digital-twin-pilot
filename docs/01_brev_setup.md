@@ -242,7 +242,9 @@ docker run --name isaac-sim \
   -it --gpus all \
   -e "ACCEPT_EULA=Y" \
   -e "PRIVACY_CONSENT=Y" \
-  --rm --network=host \
+  -e "ROS_DISTRO=jazzy" \
+  -e "RMW_IMPLEMENTATION=rmw_fastrtps_cpp" \
+  --rm --network=host --ipc=host --pid=host \
   -v ~/docker/isaac-sim/cache/main:/isaac-sim/.cache:rw \
   -v ~/docker/isaac-sim/cache/computecache:/isaac-sim/.nv/ComputeCache:rw \
   -v ~/docker/isaac-sim/logs:/isaac-sim/.nvidia-omniverse/logs:rw \
@@ -251,7 +253,8 @@ docker run --name isaac-sim \
   -v ~/docker/isaac-sim/pkg:/isaac-sim/.local/share/ov/pkg:rw \
   -u 1234:1234 \
   nvcr.io/nvidia/isaac-sim:5.1.0 \
-  -lc "./runheadless.sh --/app/livestream/publicEndpointAddress=$PUBLIC_IP --/app/livestream/port=49100"
+  -lc "export LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib:\$LD_LIBRARY_PATH && \
+  ./runheadless.sh --/app/livestream/publicEndpointAddress=$PUBLIC_IP --/app/livestream/port=49100"
 ```
 
 > By setting `-e "ACCEPT_EULA=Y"` you accept the [NVIDIA Omniverse License Agreement](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/common/NVIDIA_Omniverse_License_Agreement.html).  
