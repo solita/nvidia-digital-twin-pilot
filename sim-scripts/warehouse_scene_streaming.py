@@ -210,6 +210,15 @@ async def setup_scene():
         log("ERROR: Stage is None after opening")
         return
 
+    # Auto-enable VS Code integration so users don't have to do it manually
+    # via Window → Extensions each time Isaac Sim restarts.
+    try:
+        ext_mgr = omni.kit.app.get_app().get_extension_manager()
+        ext_mgr.set_extension_enabled_immediate("omni.isaac.vscode", True)
+        log("Enabled omni.isaac.vscode extension (port 8226)")
+    except Exception as e:
+        log(f"WARNING: Could not enable omni.isaac.vscode: {e}")
+
     # Verify key prims — check first forklift
     forklift_prim = stage.GetPrimAtPath(FORKLIFT_PRIM_PATH)
     if not forklift_prim.IsValid():

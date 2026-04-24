@@ -68,7 +68,7 @@ services:
       - SCENE_USD=/sim-scripts/scenes/scene_assembly.usd
     volumes:
       - ./sim-scripts:/sim-scripts
-      - ./simulations/forklift-warehouse/01_scenes:/sim-scripts/scenes:ro
+      - ./simulations/forklift-warehouse/01_scenes:/sim-scripts/scenes
       - ./simulations/forklift-warehouse/02_core_scripts:/sim-scripts/core_scripts:ro
       - isaac-sim-cache:/isaac-sim/kit/cache
       - isaac-sim-logs:/isaac-sim/.nvidia-omniverse/logs

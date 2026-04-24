@@ -63,7 +63,7 @@ In the Isaac Sim WebRTC Client:
 
 This starts a TCP server inside Isaac Sim that listens on port `8226`. VS Code will send Python scripts over this socket and receive their output.
 
-> You must repeat this step each time Isaac Sim is restarted unless you set the extension to auto-load.
+> **Auto-enabled:** The `warehouse_scene_streaming.py` startup script now enables `omni.isaac.vscode` automatically. You should only need to do this manually if you are running Isaac Sim outside the normal Docker Compose workflow.
 
 ---
 

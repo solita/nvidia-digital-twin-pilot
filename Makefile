@@ -50,6 +50,9 @@ brev-down: ## Stop all Brev services
 brev-restart: ## Restart all Brev services
 	$(BREV_COMPOSE) restart
 
+brev-restart-sim: ## Restart only the Isaac Sim container
+	$(BREV_COMPOSE) up -d isaac-sim
+
 brev-logs: ## Tail logs for all Brev services
 	$(BREV_COMPOSE) logs -f
 

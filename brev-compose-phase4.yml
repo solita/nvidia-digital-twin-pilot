@@ -42,7 +42,7 @@ services:
       - SCENE_USD=/sim-scripts/scenes/scene_assembly.usd
     volumes:
       - ./sim-scripts:/sim-scripts:ro
-      - ./simulations/forklift-warehouse/01_scenes:/sim-scripts/scenes:ro
+      - ./simulations/forklift-warehouse/01_scenes:/sim-scripts/scenes
       - isaac-sim-cache:/isaac-sim/kit/cache
     command: ./python.sh /sim-scripts/warehouse_scene.py --headless
     depends_on:
