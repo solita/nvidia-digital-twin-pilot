@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Isaac Sim Dashboard</title>
+<style>
+:root {
+  --bg: #0f0f1a;
+  --card: #1a1a2e;
+  --border: #2a2a40;
+  --text: #e0e0e0;
+  --dim: #888;
+  --accent: #4fc3f7;
+  --green: #4caf50;
+  --red: #f44336;
+  --orange: #ff9800;
+  --yellow: #ffeb3b;
+  --canvas-bg: #12121f;
+  --canvas-grid: #1e1e35;
+  --canvas-label: #555;
+  --log-bg: #0a0a14;
+  --log-text: #b0b0b0;
+  --td-border: #1e1e30;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f0f2f5;
+    --card: #ffffff;
+    --border: #d0d5dd;
+    --text: #1a1a2e;
+    --dim: #667;
+    --accent: #0277bd;
+    --green: #2e7d32;
+    --red: #c62828;
+    --orange: #e65100;
+    --yellow: #f9a825;
+    --canvas-bg: #e8eaf0;
+    --canvas-grid: #c0c4cc;
+    --canvas-label: #888;
+    --log-bg: #f5f5f5;
+    --log-text: #333;
+    --td-border: #e0e2e8;
+  }
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, 'Segoe UI', Roboto, monospace;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 24px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+header h1 { font-size: 18px; font-weight: 600; }
+.conn-status {
+  display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--dim);
+}
+.conn-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--red); transition: background 0.3s;
+}
+.conn-dot.ok { background: var(--green); }
+main { padding: 16px 24px; display: flex; flex-direction: column; gap: 16px; }
+
+/* System cards */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 16px;
+}
+.card-label { font-size: 11px; text-transform: uppercase; color: var(--dim); margin-bottom: 6px; }
+.card-value { font-size: 22px; font-weight: 700; }
+.card-sub { font-size: 12px; color: var(--dim); margin-top: 4px; }
+.bar-track {
+  height: 6px; background: var(--border); border-radius: 3px; margin-top: 8px; overflow: hidden;
+}
+.bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+
+/* Containers table */
+.section { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+.section-title { font-size: 13px; text-transform: uppercase; color: var(--dim); margin-bottom: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; padding: 6px 10px; color: var(--dim); font-weight: 500; border-bottom: 1px solid var(--border); }
+td { padding: 8px 10px; border-bottom: 1px solid var(--td-border); }
+.status-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;
+}
+.status-up { background: rgba(76,175,80,0.2); color: var(--green); }
+.status-exited { background: rgba(244,67,54,0.2); color: var(--red); }
+.status-other { background: rgba(255,152,0,0.2); color: var(--orange); }
+
+/* Split panel */
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 800px) { .split { grid-template-columns: 1fr; } }
+
+/* Robot info bar */
+.robot-bar { display: flex; flex-wrap: wrap; gap: 4px 20px; align-items: center; }
+.robot-item { display: flex; align-items: baseline; gap: 6px; }
+.robot-label { font-size: 11px; color: var(--dim); white-space: nowrap; }
+.robot-val { font-size: 15px; font-weight: 600; font-family: 'SF Mono', 'Consolas', monospace; white-space: nowrap; }
+.ros-status {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; padding: 4px 10px; border-radius: 10px;
+}
+.ros-ok { background: rgba(76,175,80,0.15); color: var(--green); }
+.ros-none { background: rgba(136,136,136,0.15); color: var(--dim); }
+
+/* Lidar canvas */
+#lidar-canvas {
+  width: 100%; aspect-ratio: 1; background: var(--canvas-bg); border-radius: 8px;
+  display: block;
+}
+
+/* Camera feed */
+.camera-container { position: relative; max-width: 100%; }
+#camera-feed {
+  display: block; width: 100%; border-radius: 8px;
+  background: var(--canvas-bg); image-rendering: auto;
+}
+.camera-placeholder {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; aspect-ratio: 3/2; background: var(--canvas-bg);
+  border-radius: 8px; color: var(--dim); font-size: 13px;
+}
+.camera-stats { font-size: 11px; color: var(--dim); margin-top: 6px; }
+#detection-canvas {
+  position: absolute; top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none; border-radius: 8px;
+}
+.detection-stats { font-size: 11px; color: var(--accent); margin-top: 2px; }
+
+/* Log viewer */
+.log-header { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+.log-header select {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  padding: 5px 10px; border-radius: 4px; font-size: 13px;
+}
+.log-header button {
+  background: var(--accent); color: #000; border: none; padding: 5px 14px;
+  border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;
+}
+.log-header button:hover { opacity: 0.85; }
+.log-header label { font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 4px; }
+#log-output {
+  background: var(--log-bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px; font-family: 'SF Mono', 'Consolas', monospace; font-size: 11px;
+  height: 260px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+  color: var(--log-text); line-height: 1.5;
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Isaac Sim Dashboard</h1>
+  <div class="conn-status">
+    <div class="conn-dot" id="conn-dot"></div>
+    <span id="conn-text">Connecting...</span>
+  </div>
+</header>
+
+<main>
+  <!-- System cards -->
+  <div class="cards">
+    <div class="card" id="card-gpu">
+      <div class="card-label">GPU</div>
+      <div class="card-value" id="gpu-name">—</div>
+      <div class="card-sub" id="gpu-detail">—</div>
+      <div class="bar-track"><div class="bar-fill" id="gpu-bar" style="width:0; background:var(--accent)"></div></div>
+    </div>
+    <div class="card">
+      <div class="card-label">CPU Load</div>
+      <div class="card-value" id="cpu-load">—</div>
+      <div class="card-sub" id="cpu-detail">—</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Memory</div>
+      <div class="card-value" id="mem-value">—</div>
+      <div class="card-sub" id="mem-detail">—</div>
+      <div class="bar-track"><div class="bar-fill" id="mem-bar" style="width:0; background:var(--orange)"></div></div>
+    </div>
+    <div class="card">
+      <div class="card-label">Disk</div>
+      <div class="card-value" id="disk-value">—</div>
+      <div class="card-sub" id="disk-detail">—</div>
+      <div class="bar-track"><div class="bar-fill" id="disk-bar" style="width:0; background:var(--green)"></div></div>
+    </div>
+  </div>
+
+  <!-- Camera + Lidar -->
+  <div class="split">
+    <div class="section">
+      <div class="section-title">Robot Camera (Front-Facing)</div>
+      <div class="camera-container">
+        <div id="camera-placeholder" class="camera-placeholder">Waiting for camera feed...</div>
+        <img id="camera-feed" alt="Robot camera" style="display:none" />
+        <canvas id="detection-canvas" width="480" height="320"></canvas>
+      </div>
+      <div class="camera-stats" id="camera-stats"></div>
+      <div class="detection-stats" id="detection-stats"></div>
+    </div>
+    <div class="section">
+      <div class="section-title">Lidar Scan</div>
+      <canvas id="lidar-canvas" width="350" height="350"></canvas>
+    </div>
+  </div>
+
+  <!-- Robot data bar -->
+  <div class="section">
+    <div class="robot-bar">
+      <div id="ros-status" class="ros-status ros-none">ROS2: No data</div>
+      <div class="robot-item"><span class="robot-label">X</span><span class="robot-val" id="r-px">0.0000</span></div>
+      <div class="robot-item"><span class="robot-label">Y</span><span class="robot-val" id="r-py">0.0000</span></div>
+      <div class="robot-item"><span class="robot-label">Speed</span><span class="robot-val" id="r-speed">0.000</span></div>
+      <div class="robot-item"><span class="robot-label">Heading</span><span class="robot-val" id="r-heading">0.0</span></div>
+      <div class="robot-item"><span class="robot-label">Cmd Lin</span><span class="robot-val" id="r-clinear">0.000</span></div>
+      <div class="robot-item"><span class="robot-label">Cmd Ang</span><span class="robot-val" id="r-cangular">0.000</span></div>
+      <div class="robot-item"><span class="robot-label">Vel X</span><span class="robot-val" id="r-lvx">0.000</span></div>
+      <div class="robot-item"><span class="robot-label">Vel Y</span><span class="robot-val" id="r-lvy">0.000</span></div>
+      <div class="robot-item"><span class="robot-label">Sim T</span><span class="robot-val" id="r-simtime">0.000</span></div>
+      <div class="robot-item"><span class="robot-label">Rays</span><span class="robot-val" id="r-scancount">0</span></div>
+    </div>
+  </div>
+
+  <!-- Containers table -->
+  <div class="section">
+    <div class="section-title">Containers</div>
+    <table>
+      <thead><tr><th>Name</th><th>Status</th><th>Image</th><th>Ports</th></tr></thead>
+      <tbody id="container-tbody"></tbody>
+    </table>
+  </div>
+
+  <!-- ROS2 Topics -->
+  <div class="section">
+    <div class="section-title">ROS2 Topics</div>
+    <table>
+      <thead><tr><th>Topic</th><th>Type</th><th>Hz</th><th>Messages</th><th>Last Msg</th><th>Status</th></tr></thead>
+      <tbody id="topics-tbody"></tbody>
+    </table>
+  </div>
+
+  <!-- Log viewer -->
+  <div class="section">
+    <div class="section-title">Container Logs</div>
+    <div class="log-header">
+      <select id="log-select"><option value="">Select container...</option></select>
+      <button id="log-fetch">Fetch Logs</button>
+      <label><input type="checkbox" id="log-auto" checked> Auto-refresh (5s)</label>
+    </div>
+    <pre id="log-output">Select a container and click Fetch Logs.</pre>
+  </div>
+</main>
+
+<script>
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+let ws = null;
+let reconnectDelay = 1000;
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onopen = () => {
+    document.getElementById('conn-dot').classList.add('ok');
+    document.getElementById('conn-text').textContent = 'Connected';
+    reconnectDelay = 1000;
+  };
+
+  ws.onclose = () => {
+    document.getElementById('conn-dot').classList.remove('ok');
+    document.getElementById('conn-text').textContent = 'Reconnecting...';
+    setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 1.5, 10000);
+  };
+
+  ws.onmessage = (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === 'state') updateState(msg);
+      else if (msg.type === 'logs') updateLogs(msg);
+    } catch (e) { /* ignore */ }
+  };
+}
+
+// ── State update ──────────────────────────────────────────────────────────────
+function updateState(s) {
+  // System
+  const gpu = s.system?.gpu;
+  if (gpu) {
+    document.getElementById('gpu-name').textContent = gpu.name;
+    document.getElementById('gpu-detail').textContent =
+      `${gpu.temp}°C · ${gpu.util}% util · ${gpu.mem_used}/${gpu.mem_total} MiB`;
+    document.getElementById('gpu-bar').style.width = gpu.util + '%';
+  }
+
+  const load = s.system?.load;
+  if (load) {
+    document.getElementById('cpu-load').textContent = load[0];
+    document.getElementById('cpu-detail').textContent = `1m: ${load[0]}  5m: ${load[1]}  15m: ${load[2]}`;
+  }
+
+  const mem = s.system?.mem;
+  if (mem) {
+    const pct = Math.round(mem.used / mem.total * 100);
+    document.getElementById('mem-value').textContent = `${mem.used} MiB`;
+    document.getElementById('mem-detail').textContent = `${pct}% of ${mem.total} MiB`;
+    document.getElementById('mem-bar').style.width = pct + '%';
+  }
+
+  const disk = s.system?.disk;
+  if (disk) {
+    document.getElementById('disk-value').textContent = disk.used;
+    document.getElementById('disk-detail').textContent = `${disk.pct} of ${disk.total}`;
+    document.getElementById('disk-bar').style.width = disk.pct;
+  }
+
+  if (s.system?.uptime) {
+    document.getElementById('cpu-detail').textContent += ` · up since ${s.system.uptime}`;
+  }
+
+  // Containers
+  const tbody = document.getElementById('container-tbody');
+  const sel = document.getElementById('log-select');
+  const oldVal = sel.value;
+  tbody.innerHTML = '';
+  sel.innerHTML = '<option value="">Select container...</option>';
+
+  (s.containers || []).forEach(c => {
+    const tr = document.createElement('tr');
+    const statusLower = c.status.toLowerCase();
+    let badge = 'status-other';
+    if (statusLower.startsWith('up')) badge = 'status-up';
+    else if (statusLower.includes('exited')) badge = 'status-exited';
+    tr.innerHTML = `
+      <td>${esc(c.name)}</td>
+      <td><span class="status-badge ${badge}">${esc(c.status)}</span></td>
+      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc(c.image)}</td>
+      <td style="font-size:11px">${esc(c.ports)}</td>`;
+    tbody.appendChild(tr);
+
+    const opt = document.createElement('option');
+    opt.value = c.name;
+    opt.textContent = c.name;
+    sel.appendChild(opt);
+  });
+  sel.value = oldVal;
+
+  // Robot
+  const r = s.robot || {};
+  const hasData = r.odom_age < 10;
+  const rosEl = document.getElementById('ros-status');
+  rosEl.className = 'ros-status ' + (hasData ? 'ros-ok' : 'ros-none');
+  rosEl.textContent = hasData ? `ROS2: Receiving (${r.odom_age}s ago)` : 'ROS2: No data';
+
+  const pos = r.position || [0,0,0];
+  const ori = r.orientation || [0,0,0,1];
+  const lv = r.linear_vel || [0,0,0];
+  const speed = Math.sqrt(lv[0]**2 + lv[1]**2);
+  const heading = Math.atan2(2*(ori[3]*ori[2]+ori[0]*ori[1]), 1-2*(ori[1]**2+ori[2]**2)) * 180/Math.PI;
+
+  document.getElementById('r-px').textContent = pos[0].toFixed(4);
+  document.getElementById('r-py').textContent = pos[1].toFixed(4);
+  document.getElementById('r-speed').textContent = speed.toFixed(3);
+  document.getElementById('r-heading').textContent = heading.toFixed(1) + '°';
+  document.getElementById('r-clinear').textContent = (r.cmd_linear||0).toFixed(3);
+  document.getElementById('r-cangular').textContent = (r.cmd_angular||0).toFixed(3);
+  document.getElementById('r-lvx').textContent = lv[0].toFixed(3);
+  document.getElementById('r-lvy').textContent = lv[1].toFixed(3);
+  document.getElementById('r-simtime').textContent = (r.sim_time||0).toFixed(3);
+  document.getElementById('r-scancount').textContent = (r.scan_ranges||[]).length;
+
+  // ROS2 Topics table
+  const ttbody = document.getElementById('topics-tbody');
+  ttbody.innerHTML = '';
+  const expectedTopics = ['/clock', '/cmd_vel', '/odom', '/scan'];
+  const topics = s.topics || {};
+  const allNames = new Set([...expectedTopics, ...Object.keys(topics)]);
+  [...allNames].sort().forEach(name => {
+    const t = topics[name];
+    const tr = document.createElement('tr');
+    if (t) {
+      const alive = t.age < 10;
+      const badge = alive ? 'status-up' : 'status-exited';
+      const label = alive ? 'Active' : 'Stale';
+      tr.innerHTML = `
+        <td style="font-family:monospace;font-weight:600">${esc(name)}</td>
+        <td style="font-size:12px;color:var(--dim)">${esc(t.type)}</td>
+        <td style="font-family:monospace">${t.hz.toFixed(1)}</td>
+        <td style="font-family:monospace">${t.count.toLocaleString()}</td>
+        <td style="font-size:12px">${t.age.toFixed(1)}s ago</td>
+        <td><span class="status-badge ${badge}">${label}</span></td>`;
+    } else {
+      tr.innerHTML = `
+        <td style="font-family:monospace;font-weight:600">${esc(name)}</td>
+        <td style="font-size:12px;color:var(--dim)">—</td>
+        <td>—</td><td>—</td><td>—</td>
+        <td><span class="status-badge status-other">No data</span></td>`;
+    }
+    ttbody.appendChild(tr);
+  });
+
+  // Lidar
+  drawLidar(r);
+
+  // Camera
+  if (s.camera_rgb) {
+    const img = document.getElementById('camera-feed');
+    const ph = document.getElementById('camera-placeholder');
+    img.src = 'data:image/jpeg;base64,' + s.camera_rgb;
+    img.style.display = 'block';
+    ph.style.display = 'none';
+    _cameraFrames++;
+    const now = performance.now();
+    if (now - _cameraFpsT > 2000) {
+      _cameraFps = (_cameraFrames / ((now - _cameraFpsT) / 1000)).toFixed(1);
+      _cameraFrames = 0;
+      _cameraFpsT = now;
+    }
+    const kb = Math.round(s.camera_rgb.length * 3 / 4 / 1024);
+    document.getElementById('camera-stats').textContent =
+      `${kb} KB/frame · ~${_cameraFps} FPS to browser · 480×320 JPEG`;
+  }
+
+  // ML Detections
+  if (s.detections_ml) {
+    drawDetections(s.detections_ml);
+    const n = (s.detections_ml.detections || []).length;
+    const ms = s.detections_ml.inference_ms || 0;
+    document.getElementById('detection-stats').textContent =
+      `ML: ${s.detections_ml.model || 'YOLO'} · ${n} detection${n !== 1 ? 's' : ''} · ${ms}ms inference`;
+  }
+}
+
+// ── Lidar canvas ──────────────────────────────────────────────────────────────
+function drawLidar(r) {
+  const canvas = document.getElementById('lidar-canvas');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const cx = W/2, cy = H/2;
+  const maxRange = 5.0; // meters
+  const scale = Math.min(cx, cy) * 0.9 / maxRange;
+
+  ctx.clearRect(0, 0, W, H);
+
+  const cs = getComputedStyle(document.documentElement);
+  const gridColor = cs.getPropertyValue('--canvas-grid').trim();
+  const labelColor = cs.getPropertyValue('--canvas-label').trim();
+
+  // Background circles
+  ctx.strokeStyle = gridColor;
+  ctx.lineWidth = 1;
+  for (let d = 1; d <= maxRange; d++) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, d * scale, 0, Math.PI*2);
+    ctx.stroke();
+  }
+
+  // Axis lines
+  ctx.strokeStyle = gridColor;
+  ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
+
+  // Labels
+  ctx.fillStyle = labelColor;
+  ctx.font = '10px monospace';
+  ctx.fillText('FWD', cx+3, 14);
+  ctx.fillText('BACK', cx+3, H-6);
+  ctx.fillText('L', 4, cy-4);
+  ctx.fillText('R', W-14, cy-4);
+
+  // Range labels
+  for (let d = 1; d <= maxRange; d++) {
+    ctx.fillText(d+'m', cx+3, cy - d*scale + 12);
+  }
+
+  // Scan points
+  const ranges = r.scan_ranges || [];
+  const aMin = r.scan_angle_min || 0;
+  const aInc = r.scan_angle_increment || 0;
+
+  if (ranges.length > 0 && aInc !== 0) {
+    for (let i = 0; i < ranges.length; i++) {
+      const dist = ranges[i];
+      if (dist <= 0) continue;
+      const angle = aMin + i * aInc;
+      const px = cx - dist * Math.sin(angle) * scale;
+      const py = cy - dist * Math.cos(angle) * scale;
+
+      // Color: green=far, yellow=medium, red=close
+      const t = Math.min(dist / maxRange, 1.0);
+      const red = Math.round(255 * (1 - t));
+      const green = Math.round(255 * t);
+      ctx.fillStyle = `rgb(${red},${green},60)`;
+      ctx.beginPath();
+      ctx.arc(px, py, 2.5, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+
+}
+
+function getAccent() {
+  return getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+}
+
+// ── ML Detection overlay ──────────────────────────────────────────────────────
+function classColor(label) {
+  let h = 0;
+  for (let i = 0; i < label.length; i++) h = label.charCodeAt(i) + ((h << 5) - h);
+  h = ((h % 360) + 360) % 360;
+  return `hsl(${h}, 80%, 55%)`;
+}
+
+function drawDetections(data) {
+  const canvas = document.getElementById('detection-canvas');
+  const ctx = canvas.getContext('2d');
+  canvas.width = data.width || 480;
+  canvas.height = data.height || 320;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  for (const det of (data.detections || [])) {
+    const [x1, y1, x2, y2] = det.bbox;
+    const color = classColor(det.label);
+
+    // Bounding box
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+
+    // Label with background
+    const label = `${det.label} ${Math.round(det.confidence * 100)}%`;
+    ctx.font = 'bold 11px monospace';
+    const tw = ctx.measureText(label).width;
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.85;
+    ctx.fillRect(x1, y1 - 16, tw + 8, 16);
+    ctx.globalAlpha = 1.0;
+    ctx.fillStyle = '#000';
+    ctx.fillText(label, x1 + 4, y1 - 4);
+  }
+}
+
+// Camera FPS tracking
+let _cameraFrames = 0;
+let _cameraFpsT = performance.now();
+let _cameraFps = '0.0';
+
+// ── Logs ──────────────────────────────────────────────────────────────────────
+let logInterval = null;
+
+function fetchLogs() {
+  const name = document.getElementById('log-select').value;
+  if (!name || !ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({action: 'get_logs', container: name}));
+}
+
+function updateLogs(msg) {
+  const el = document.getElementById('log-output');
+  el.textContent = msg.data || '(empty)';
+  el.scrollTop = el.scrollHeight;
+}
+
+document.getElementById('log-fetch').addEventListener('click', fetchLogs);
+document.getElementById('log-auto').addEventListener('change', (e) => {
+  clearInterval(logInterval);
+  if (e.target.checked) logInterval = setInterval(fetchLogs, 5000);
+});
+document.getElementById('log-select').addEventListener('change', () => {
+  document.getElementById('log-output').textContent = 'Loading...';
+  fetchLogs();
+  clearInterval(logInterval);
+  if (document.getElementById('log-auto').checked) {
+    logInterval = setInterval(fetchLogs, 5000);
+  }
+});
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+connect();
+logInterval = setInterval(fetchLogs, 5000);
+
+// Resize canvas to match CSS (keep it square)
+function resizeCanvas() {
+  const c = document.getElementById('lidar-canvas');
+  const rect = c.getBoundingClientRect();
+  const size = Math.round(rect.width);
+  if (c.width !== size || c.height !== size) {
+    c.width = size;
+    c.height = size;
+  }
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+</script>
+</body>
+</html>
