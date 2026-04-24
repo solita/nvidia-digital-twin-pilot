@@ -206,6 +206,27 @@ async def setup_scene():
     # Configure physics
     setup_physics(stage)
 
+    # Enumerate joints on the forklift for diagnostics
+    forklift_prim = stage.GetPrimAtPath(FORKLIFT_PRIM_PATH)
+    if forklift_prim.IsValid():
+        from pxr import UsdPhysics as _UsdPhysics
+        joint_names = []
+        for prim in Usd.PrimRange(forklift_prim):
+            if prim.IsA(_UsdPhysics.Joint):
+                joint_names.append(str(prim.GetPath()))
+                log(f"  Joint found: {prim.GetPath()} type={prim.GetTypeName()}")
+        log(f"Total joints on forklift: {len(joint_names)}")
+        # Also check articulation root
+        art_api = _UsdPhysics.ArticulationRootAPI(forklift_prim)
+        if art_api:
+            log(f"Articulation root found at {FORKLIFT_PRIM_PATH}")
+        # Try the body as articulation root
+        body_prim = stage.GetPrimAtPath(FORKLIFT_BODY_PATH)
+        if body_prim.IsValid():
+            art_api_body = _UsdPhysics.ArticulationRootAPI(body_prim)
+            if art_api_body:
+                log(f"Articulation root also at {FORKLIFT_BODY_PATH}")
+
     # Create ROS 2 bridge
     create_ros2_bridge_graph(stage)
 
