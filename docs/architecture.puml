@@ -1,0 +1,221 @@
+@startuml Warehouse Digital Twin Architecture
+!theme mars
+skinparam backgroundColor #0f0f23
+skinparam defaultFontColor #e2e8f0
+skinparam componentBackgroundColor #1a1a2e
+skinparam componentBorderColor #4a5568
+skinparam databaseBackgroundColor #2d3748
+skinparam nodeBackgroundColor #1e293b
+skinparam noteBorderColor #4a5568
+skinparam arrowColor #63b3ed
+skinparam stereotypeFontColor #a0aec0
+skinparam packageBorderColor #4a5568
+skinparam rectangleBorderColor #4a5568
+skinparam rectangleBackgroundColor #1e293b
+skinparam cloudBorderColor #4a5568
+skinparam cloudBackgroundColor #1a1a2e
+
+
+title **Warehouse Digital Twin — Dual Deployment Architecture**\nPhase 4+: Brev GPU instance ↔ Local developer machine\nROS 2 Domain ID 42 · FastDDS Discovery Server · Tailscale VPN · RMW: rmw_fastrtps_cpp
+
+' ============================================================================
+' BREV CLOUD GPU INSTANCE (brev-compose-phase4.yml)
+' ============================================================================
+
+cloud "**Brev Cloud GPU Instance**\n(brev-compose-phase4.yml)\nA4000+ GPU · network_mode: host\nTailscale IP: ${BREV_TAILSCALE_IP}" as brev_cloud #1a1a3e {
+
+    rectangle "**discovery-server**\nros:humble\n---\nfastdds discovery-server -i 0 -p 11811\nPrefix: 44.53.00.5f.45.50.52.4f.53.49.4d.41\nSPDP/SEDP rendezvous for all ROS 2 nodes\nUDP 0.0.0.0:**11811**\nHealthcheck: nc -zw3 localhost 11811\n//Central DDS discovery for both hosts//" as discovery #2b6cb0
+
+    rectangle "**isaac-sim**\nnvcr.io/nvidia/isaac-sim:**5.1.0**\n---\nPhysX Engine · TGS solver · 60 Hz\nLoads scene_assembly.usd\nRuns warehouse_scene.py --headless\nGPU dynamics · CCD + stabilization\n**Volume:** isaac-sim-cache (shader cache)\n//Physics truth source//" as isaacsim #553c9a
+
+    rectangle "**OmniGraph ROS 2 Bridge**\n(inside isaac-sim)" as omnigraph #7b3f9e {
+        component "OnPlaybackTick (60 Hz)" as tick
+        component "ROS2PublishClock → /clock" as clock_pub
+        component "ROS2SubscribeTwist → DifferentialController\n→ ArticulationController" as twist_pipeline
+        component "IsaacComputeOdometry → ROS2PublishOdometry" as odom_pipeline
+        component "ROS2PublishJointState · ROS2PublishTransformTree" as tf_joint
+    }
+
+    rectangle "**vehicle-controller**\nROS 2 rclpy node\n---\nForkliftControllerNode (**×4**)\nmulti_forklift.launch.py\nNUM_FORKLIFTS=4\n---\n**Control loop:** 10 Hz cmd_vel\n**Status broadcast:** 2 Hz\n**Navigation:** P-controller\nKP_LINEAR=0.5 · KP_ANGULAR=2.0\n---\n**Fork positions (m):**\nGROUND=0.0 · TRAVEL=0.5 · LIFTED=0.8\n**Wheel:** r=0.15m · dist=1.0m\n**Limits:** 0.5 m/s linear · 1.0 rad/s angular\n//Drives forklifts via cmd_vel//" as vehicle #38a169
+}
+
+' ============================================================================
+' LOCAL DEVELOPER MACHINE (local-compose.yml + local-start.sh)
+' ============================================================================
+
+cloud "**Local Developer Machine**\n(local-compose.yml · ./local-start.sh)\nFastDDS CLIENT → ${BREV_TAILSCALE_IP}:11811\nfastdds_client_resolved.xml (via envsubst)" as local_machine #1e293b {
+
+    rectangle "**warehouse-manager**\nFastAPI + ROS 2 rclpy node\n---\nWarehouseManagerNode · port **8000**\nROS_DISCOVERY_SERVER=${BREV_TAILSCALE_IP}:11811\n---\n**REST API:**\nPOST /orders · GET /orders?status=\nGET /forklifts · GET /forklifts/{id}\nPUT /forklifts/{id}/pause or resume\nDELETE /tasks/{task_id}\nGET /metrics · POST /config\nPOST /record/start,stop\nPOST /replay/start,stop\n---\n**WebSocket** /ws/live:\nforklift_update · order_update\ntask_status · reset\n//Central orchestrator//" as manager #c05621
+
+    rectangle "**Dispatcher** (dispatcher.py)" as dispatch #8b4513 {
+        component "nearest_assign()\n//Greedy closest idle forklift//" as nearest
+        component "batch_assign()\n//Hungarian algorithm\n(scipy linear_sum_assignment)//" as hungarian
+    }
+
+    database "**redis**\nredis:7-alpine · port **6379**\nbridge network\n---\nIn-memory state cache\nPub/Sub event relay\nAOF persistence\n**Volume:** redis-data\n//Hot state layer//" as redis #c53030
+
+    database "**SQLite**\nwarehouse.db · WAL mode\n---\n**orders** (id, items JSON, priority,\n  status, assigned_forklift,\n  created_at, completed_at)\n**tasks** (id, order_id, forklift_id,\n  status, shelf_x/y/z, dock_x/y/z,\n  created_at, completed_at)\n**metrics_log** (timestamp,\n  metric_name, metric_value, strategy)\n**Volume:** warehouse-db\n//Persistent history//" as sqlite #718096
+
+    rectangle "**dashboard**\nReact + TypeScript (Vite)\nport **3000** · Docker profile: dashboard\n---\n**Components:**\nWarehouseMap (2D fleet view)\nFleetStatus (battery, state cards)\nOrderQueue (CRUD table)\nMetricsPanel (KPI aggregates)\nConfigPanel (dispatch strategy toggle)\n---\n**State:** Zustand stores\nwarehouseStore · orderStore\n**Hooks:** useApi() · useWebSocket()\nReconnecting WS (1s–10s backoff)\n---\nVITE_API_URL · VITE_WS_URL\n//Browser UI//" as dashboard #2b6cb0
+}
+
+' ============================================================================
+' FORKLIFT STATE MACHINE
+' ============================================================================
+
+rectangle "**Forklift State Machine** (per forklift)" as fsm #2d3748 {
+    rectangle "IDLE (0)" as s_idle #38a169
+    rectangle "NAVIGATING_TO_SHELF (1)" as s_nav_shelf #2b6cb0
+    rectangle "PICKING (2)" as s_pick #ecc94b
+    rectangle "NAVIGATING_TO_DOCK (3)" as s_nav_dock #2b6cb0
+    rectangle "DROPPING (4)" as s_drop #ecc94b
+
+    s_idle -[#68d391]-> s_nav_shelf : TaskAssignment\nreceived
+    s_nav_shelf -[#68d391]-> s_pick : distance < 0.3m\nto shelf
+    s_pick -[#68d391]-> s_nav_dock : pick sequence\ncomplete (~6s)
+    s_nav_dock -[#68d391]-> s_drop : distance < 0.3m\nto dock
+    s_drop -[#68d391]-> s_idle : drop sequence\ncomplete (~5s)\npublish TaskStatus
+}
+
+' ============================================================================
+' CONNECTIONS — TAILSCALE VPN
+' ============================================================================
+
+brev_cloud <-[#ecc94b,bold]-> local_machine : **Tailscale VPN**\nWireGuard tunnel · UDP unicast\n100.x.x.x mesh · SHM disabled
+
+' ============================================================================
+' CONNECTIONS — FASTDDS DISCOVERY
+' ============================================================================
+
+discovery -[#63b3ed,dashed]-> isaacsim : DDS register
+discovery -[#63b3ed,dashed]-> vehicle : DDS register
+discovery .[#63b3ed,dashed].> manager : DDS register\n(cross-host via Tailscale)
+
+' ============================================================================
+' CONNECTIONS — OMNIGRAPH INTERNAL
+' ============================================================================
+
+tick --> clock_pub
+tick --> twist_pipeline
+tick --> odom_pipeline
+tick --> tf_joint
+
+' ============================================================================
+' CONNECTIONS — BREV-INTERNAL DDS (isaac-sim ↔ vehicle-controller)
+' ============================================================================
+
+vehicle -[#68d391]-> twist_pipeline : /{id}/cmd_vel (Twist)\nBEST_EFFORT · 10 Hz
+odom_pipeline -[#68d391]-> vehicle : /{id}/odom (Odometry)\nBEST_EFFORT · 60 Hz
+vehicle -[#68d391]-> isaacsim : /{id}/fork_cmd (Float64)\nBEST_EFFORT
+clock_pub -[#a0aec0,dashed]-> vehicle : /clock (Clock)\n60 Hz
+tf_joint -[#a0aec0,dashed]-> vehicle : /tf · /{id}/joint_states\n60 Hz
+
+' ============================================================================
+' CONNECTIONS — CROSS-HOST DDS (vehicle-controller ↔ warehouse-manager)
+' ============================================================================
+
+manager -[#68d391,bold]-> vehicle : /warehouse/task_assignment\n(TaskAssignment.msg)\nRELIABLE · TRANSIENT_LOCAL
+vehicle -[#fc8181,bold]-> manager : /{id}/status (ForkliftStatus.msg)\nRELIABLE · TRANSIENT_LOCAL · 2 Hz
+vehicle -[#fc8181,bold]-> manager : /warehouse/task_status\n(TaskStatus.msg) · RELIABLE
+
+' ============================================================================
+' CONNECTIONS — LOCAL DATA STORES
+' ============================================================================
+
+manager -[#a0aec0]-> redis : cache forklift state\nPub/Sub events
+manager -[#a0aec0]-> sqlite : persist orders, tasks,\nmetrics history
+manager -[#a0aec0]-> dispatch : _try_dispatch()\nselect strategy via\nDISPATCH_STRATEGY env
+
+' ============================================================================
+' CONNECTIONS — DASHBOARD ↔ MANAGER
+' ============================================================================
+
+dashboard -[#63b3ed]-> manager : **REST** GET/POST/PUT/DELETE\nhttp://localhost:8000
+manager -[#63b3ed]-> dashboard : **WebSocket** /ws/live\nJSON frames:\nforklift_update · order_update\ntask_status · reset
+
+' ============================================================================
+' ROS 2 TOPIC MAP
+' ============================================================================
+
+legend right
+  **ROS 2 Topic Map (warehouse_msgs)**
+  |= Topic |= Type |= QoS |= Rate |= Direction |
+  | /warehouse/task_assignment | TaskAssignment | RELIABLE/TRANSIENT_LOCAL | on dispatch | Mgr->Ctrl |
+  | /{id}/status | ForkliftStatus | RELIABLE/TRANSIENT_LOCAL | 2 Hz | Ctrl->Mgr |
+  | /warehouse/task_status | TaskStatus | RELIABLE | on event | Ctrl->Mgr |
+  | /{id}/cmd_vel | Twist | BEST_EFFORT | 10 Hz | Ctrl->Sim |
+  | /{id}/fork_cmd | Float64 | BEST_EFFORT | on event | Ctrl->Sim |
+  | /{id}/odom | Odometry | BEST_EFFORT | 60 Hz | Sim->Ctrl |
+  | /{id}/joint_states | JointState | BEST_EFFORT | 60 Hz | Sim->Ctrl |
+  | /tf | TFMessage | BEST_EFFORT | 60 Hz | Sim->All |
+  | /clock | Clock | -- | 60 Hz | Sim->All |
+
+  **Arrow Legend**
+  |= Color |= Meaning |
+  | <#68d391> | ROS 2 DDS publish |
+  | <#fc8181> | ROS 2 DDS subscribe (cross-host) |
+  | <#63b3ed> | HTTP / WebSocket |
+  | <#a0aec0> | Internal / telemetry topics (dashed) |
+  | <#ecc94b> | Tailscale VPN tunnel (bold) |
+  | <#63b3ed> | FastDDS discovery registration (dashed) |
+endlegend
+
+' ============================================================================
+' NOTES
+' ============================================================================
+
+note right of brev_cloud
+  **Brev-side** (GPU-bound workloads)
+  - Requires NVIDIA GPU (A4000+)
+  - All containers: --network_mode: host
+  - Discovery server on 0.0.0.0:11811
+  - NUM_FORKLIFTS=4 via environment
+  - **Volume:** isaac-sim-cache (shader/PhysX)
+  - **Startup order (health checks):**
+    1. discovery-server (nc -zw3 :11811)
+    2. isaac-sim (depends_on: discovery)
+    3. vehicle-controller (depends_on: isaac-sim)
+end note
+
+note right of local_machine
+  **Local-side** (orchestration + UI)
+  - No GPU required
+  - **Startup** (local-start.sh):
+    1. Verify Brev reachable: nc -zw3 $BREV_TAILSCALE_IP 11811
+    2. envsubst fastdds_client.xml → resolved XML
+    3. docker compose up (redis → manager)
+    4. Optional: --profile dashboard
+  - **Volumes:** warehouse-db, redis-data
+  - **Env:** BREV_TAILSCALE_IP, ROS_DOMAIN_ID=42,
+    DISPATCH_STRATEGY, DATABASE_PATH, REDIS_URL
+end note
+
+note bottom of fsm
+  **Pick sequence (~6s, timed — not sensor-based):**
+  lower fork → drive forward → raise fork
+  **Drop sequence (~5s, timed):**
+  lower fork → backup → raise fork
+  //Phase 1: no Nav2, no sensor detection//
+  //Battery simulation: always 100.0//
+end note
+
+' ============================================================================
+' HAPPY PATH — ORDER LIFECYCLE
+' ============================================================================
+
+note bottom of manager
+  **Order Lifecycle (happy path):**
+  1. Dashboard → POST /orders → DB insert
+  2. WebSocket broadcast: order_update
+  3. _try_dispatch() → Dispatcher selects forklift
+  4. Publish TaskAssignment.msg via ROS 2
+  5. Controller: IDLE → NAVIGATING_TO_SHELF
+  6. P-control loop at 10 Hz (cmd_vel)
+  7. PICKING (timed) → NAVIGATING_TO_DOCK
+  8. DROPPING (timed) → IDLE
+  9. Controller publishes TaskStatus (completed)
+  10. Manager updates DB + WebSocket broadcast
+  11. Dashboard reflects completion
+end note
+
+@enduml
