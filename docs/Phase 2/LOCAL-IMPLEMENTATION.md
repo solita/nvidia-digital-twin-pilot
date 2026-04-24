@@ -64,7 +64,29 @@ sudo apt-get install -y docker-compose-plugin
 docker compose version
 ```
 
-### 0.4: Install ROS 2 Humble in WSL2 (for debugging)
+### 0.4: Install Make (for task shortcuts)
+
+The project uses a `Makefile` for common commands (`make up`, `make dashboard`, etc.). Install `make` in WSL2:
+
+```bash
+sudo apt-get install -y make
+make --version
+```
+
+On Windows (without WSL2), install via [Chocolatey](https://chocolatey.org/):
+
+```powershell
+# PowerShell (admin)
+choco install make
+```
+
+Or via winget:
+
+```powershell
+winget install GnuWin32.Make
+```
+
+### 0.5: Install ROS 2 Humble in WSL2 (for debugging)
 
 ```bash
 sudo apt install -y software-properties-common
@@ -79,7 +101,7 @@ echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
 source ~/.bashrc
 ```
 
-### 0.5: Install Tailscale
+### 0.6: Install Tailscale
 
 Tailscale creates a VPN mesh that gives each machine a stable `100.x.y.z` IP. You need it on **both** the local machine and Brev so ROS 2 DDS traffic can flow between them.
 
@@ -153,7 +175,7 @@ With mirrored networking, WSL2 shares the Windows host's Tailscale network. Rest
 
 **Recommendation**: Use Option A (Tailscale in WSL2). It's self-contained and doesn't affect Windows networking.
 
-### 0.6: Install Node.js (for Dashboard)
+### 0.7: Install Node.js (for Dashboard)
 
 ```bash
 # Inside WSL2
@@ -163,7 +185,7 @@ node --version  # v20.x
 npm --version
 ```
 
-### 0.7: Clone Monorepo
+### 0.8: Clone Monorepo
 
 ```bash
 # Inside WSL2
@@ -174,7 +196,7 @@ cd warehouse-sim
 
 **⚠ GOTCHA**: Clone into the WSL2 filesystem (`~/warehouse-sim`), NOT into `/mnt/c/...`. Accessing Windows filesystem from WSL2 is slow (10-50x slower for file I/O). Docker volume mounts from the WSL2 filesystem are fast.
 
-### 0.8: Build warehouse_msgs Locally (for IDE support)
+### 0.9: Build warehouse_msgs Locally (for IDE support)
 
 Even though the warehouse manager runs in Docker, building messages locally gives IDE autocompletion:
 
