@@ -28,6 +28,23 @@ services:
       timeout: 3s
       retries: 5
 
+  # --- Volume permission init (named volumes are created as root) ---
+  isaac-sim-init:
+    image: nvcr.io/nvidia/isaac-sim:5.1.0
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        chown -R 1234:1234 /isaac-sim/.nvidia-omniverse/logs \
+                            /isaac-sim/.local/share/ov/data \
+                            /isaac-sim/.nvidia-omniverse/config \
+                            /isaac-sim/kit/cache
+    user: "0:0"
+    volumes:
+      - isaac-sim-cache:/isaac-sim/kit/cache
+      - isaac-sim-logs:/isaac-sim/.nvidia-omniverse/logs
+      - isaac-sim-data:/isaac-sim/.local/share/ov/data
+      - isaac-sim-config:/isaac-sim/.nvidia-omniverse/config
+
   # --- Isaac Sim ---
   isaac-sim:
     image: nvcr.io/nvidia/isaac-sim:5.1.0
@@ -52,20 +69,23 @@ services:
     volumes:
       - ./sim-scripts:/sim-scripts
       - ./simulations/forklift-warehouse/01_scenes:/sim-scripts/scenes:ro
+      - ./simulations/forklift-warehouse/02_core_scripts:/sim-scripts/core_scripts:ro
       - isaac-sim-cache:/isaac-sim/kit/cache
       - isaac-sim-logs:/isaac-sim/.nvidia-omniverse/logs
       - isaac-sim-data:/isaac-sim/.local/share/ov/data
       - isaac-sim-config:/isaac-sim/.nvidia-omniverse/config
     command: --exec "/sim-scripts/warehouse_scene_streaming.py"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8011/health"]
+      test: ["CMD-SHELL", "test -f /tmp/isaac-sim-ready"]
       interval: 15s
       timeout: 5s
-      start_period: 120s
-      retries: 5
+      start_period: 300s
+      retries: 10
     depends_on:
       discovery-server:
         condition: service_healthy
+      isaac-sim-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   # --- WebRTC Web Viewer (serves the browser client on port 8210) ---

@@ -1,4 +1,5 @@
-.PHONY: help up down dashboard dashboard-dev logs logs-dashboard status clean restart
+.PHONY: help up down dashboard dashboard-dev logs logs-dashboard status clean restart \
+       brev-up brev-down brev-restart brev-logs brev-status brev-clean
 
 COMPOSE := docker compose -f local-compose.yml
 
@@ -34,3 +35,29 @@ restart: ## Restart all running services
 
 clean: ## Stop everything and remove volumes
 	$(COMPOSE) --profile dashboard down -v
+
+BREV_COMPOSE := docker compose -f brev-compose.yml
+
+brev-up: ## Start Brev services and wait for Isaac Sim ready
+	$(BREV_COMPOSE) up --build -d
+	@echo "--- Waiting for Isaac Sim to be ready... ---"
+	@$(BREV_COMPOSE) logs -f isaac-sim 2>&1 | grep -m1 "Isaac Sim Full Streaming App is loaded."
+	@echo "✅ Isaac Sim is ready!"
+
+brev-down: ## Stop all Brev services
+	$(BREV_COMPOSE) down
+
+brev-restart: ## Restart all Brev services
+	$(BREV_COMPOSE) restart
+
+brev-logs: ## Tail logs for all Brev services
+	$(BREV_COMPOSE) logs -f
+
+brev-logs-sim: ## Tail Isaac Sim logs only
+	$(BREV_COMPOSE) logs -f isaac-sim
+
+brev-status: ## Show running Brev containers
+	$(BREV_COMPOSE) ps
+
+brev-clean: ## Stop Brev services and remove volumes
+	$(BREV_COMPOSE) down -v

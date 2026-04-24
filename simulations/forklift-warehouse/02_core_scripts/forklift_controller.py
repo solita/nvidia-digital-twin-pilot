@@ -28,9 +28,13 @@ from pxr import Usd, UsdGeom, UsdPhysics
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-DRIVE_JOINT_PATH = "/World/forklift_b/back_wheel_joints/back_wheel_drive"
-STEER_JOINT_PATH = "/World/forklift_b/back_wheel_joints/back_wheel_swivel"
-FORKLIFT_PRIM    = "/World/forklift_b/body"  # physics rigid body — this is what actually moves
+# Fleet: all 4 forklift IDs (must match populate_scene.py and warehouse-manager)
+FORKLIFT_IDS = ["forklift_0", "forklift_1", "forklift_2", "forklift_3"]
+
+# Legacy single-forklift paths kept for reference; run_forklift() builds per-ID paths.
+DRIVE_JOINT_PATH = "/World/forklift_0/back_wheel_joints/back_wheel_drive"
+STEER_JOINT_PATH = "/World/forklift_0/back_wheel_joints/back_wheel_swivel"
+FORKLIFT_PRIM    = "/World/forklift_0/body"  # physics rigid body — this is what actually moves
 
 DRIVE_VELOCITY = -550.0   # deg/s wheel spin -- negative = forks-forward (body -X direction)
 SETTLE_FRAMES  =  60      # physics settle before driving
@@ -83,7 +87,7 @@ STATE_JSON = (
 
 # ── LIDAR sensor (2D, single horizontal ring) ─────────────────────────────────
 LIDAR_ENABLED      = True
-LIDAR_PRIM_PATH    = "/World/forklift_b/body/lidar"
+LIDAR_PRIM_PATH    = "/World/forklift_0/body/lidar"  # default; overridden per-forklift in run_forklift()
 LIDAR_STOP_DIST    = 5.5    # metres — debounced forward stop
 LIDAR_SLOW_DIST    = 8.0    # metres — beginning of proportional speed ramp (widened for forks-side geometry)
 LIDAR_DRAW_LINES   = False   # set False to disable viewport ray visualisation
@@ -168,20 +172,32 @@ def _log(level: str, msg: str, diag=None) -> None:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-async def run_forklift() -> None:
+async def run_forklift(forklift_id: str = "forklift_0", start_wp: int = 0) -> None:
+    """Drive a single forklift through the patrol loop.
+
+    Args:
+        forklift_id: Prim name under /World (e.g. "forklift_0").
+        start_wp:    Index into WAYPOINTS to begin the patrol.
+    """
+    # Per-forklift prim paths
+    drive_joint_path = f"/World/{forklift_id}/back_wheel_joints/back_wheel_drive"
+    steer_joint_path = f"/World/{forklift_id}/back_wheel_joints/back_wheel_swivel"
+    forklift_prim_path = f"/World/{forklift_id}/body"
+    lidar_prim_path  = f"/World/{forklift_id}/body/lidar"
+
     app   = omni.kit.app.get_app()
     stage = omni.usd.get_context().get_stage()
 
-    drive_joint    = stage.GetPrimAtPath(DRIVE_JOINT_PATH)
-    steer_joint    = stage.GetPrimAtPath(STEER_JOINT_PATH)
-    forklift_prim  = stage.GetPrimAtPath(FORKLIFT_PRIM)
+    drive_joint    = stage.GetPrimAtPath(drive_joint_path)
+    steer_joint    = stage.GetPrimAtPath(steer_joint_path)
+    forklift_prim  = stage.GetPrimAtPath(forklift_prim_path)
 
     if not drive_joint.IsValid():
-        raise RuntimeError(f"Drive joint not found: {DRIVE_JOINT_PATH!r}")
+        raise RuntimeError(f"[{forklift_id}] Drive joint not found: {drive_joint_path!r}")
     if not steer_joint.IsValid():
-        raise RuntimeError(f"Steer joint not found: {STEER_JOINT_PATH!r}")
+        raise RuntimeError(f"[{forklift_id}] Steer joint not found: {steer_joint_path!r}")
     if not forklift_prim.IsValid():
-        raise RuntimeError(f"Forklift prim not found: {FORKLIFT_PRIM!r}")
+        raise RuntimeError(f"[{forklift_id}] Forklift prim not found: {forklift_prim_path!r}")
 
     drive_api = UsdPhysics.DriveAPI(drive_joint, "angular")
     steer_api = UsdPhysics.DriveAPI(steer_joint, "angular")
@@ -206,23 +222,26 @@ async def run_forklift() -> None:
     # Switch to drive stiffness
     steer_api.GetStiffnessAttr().Set(STEER_STIFFNESS_DRIVE)
 
-    # ── Diag log (opened early so LIDAR startup messages are also captured) ─────
-    os.makedirs(os.path.dirname(DIAG_LOG), exist_ok=True)
-    diag = open(DIAG_LOG, "w", buffering=1)
-    diag.write("frame, fx, fy, heading, target_hdg, err, steer_cmd\n")
+    # ── Per-forklift diag log and state JSON paths ──────────────────────────────
+    diag_log = DIAG_LOG.replace("forklift_diag.txt", f"{forklift_id}_diag.txt")
+    state_json = STATE_JSON.replace("forklift_state.json", f"{forklift_id}_state.json")
+
+    os.makedirs(os.path.dirname(diag_log), exist_ok=True)
+    diag = open(diag_log, "w", buffering=1)
+    diag.write(f"[{forklift_id}] frame, fx, fy, heading, target_hdg, err, steer_cmd\n")
 
     # ── LIDAR: create sensor programmatically, attached to forklift body ───────
     lidar_if = None
     if LIDAR_ENABLED:
         # Remove stale prim from a previous run (script re-runs without full reload)
-        if stage.GetPrimAtPath(LIDAR_PRIM_PATH).IsValid():
-            omni.kit.commands.execute("DeletePrims", paths=[LIDAR_PRIM_PATH])
+        if stage.GetPrimAtPath(lidar_prim_path).IsValid():
+            omni.kit.commands.execute("DeletePrims", paths=[lidar_prim_path])
             await app.next_update_async()
 
         omni.kit.commands.execute(
             "RangeSensorCreateLidar",
-            path="/lidar",                      # relative — will land at LIDAR_PRIM_PATH
-            parent="/World/forklift_b/body",    # mounts on rigid body → moves with forklift
+            path="/lidar",                      # relative — will land at lidar_prim_path
+            parent=f"/World/{forklift_id}/body",  # mounts on rigid body → moves with forklift
             min_range=0.5,                      # metres — low global floor; per-sector software floors handle self-hits
             max_range=8.0,                      # metres — detection horizon
             draw_lines=LIDAR_DRAW_LINES,        # coloured rays in viewport
@@ -236,9 +255,9 @@ async def run_forklift() -> None:
         try:
             from omni.isaac.range_sensor import _range_sensor
             lidar_if = _range_sensor.acquire_lidar_sensor_interface()
-            _log("info", "LIDAR sensor created and interface acquired", diag)
+            _log("info", f"[{forklift_id}] LIDAR sensor created and interface acquired", diag)
         except Exception as exc:
-            _log("warn", f"LIDAR interface unavailable: {exc}", diag)
+            _log("warn", f"[{forklift_id}] LIDAR interface unavailable: {exc}", diag)
             lidar_if = None
 
     # ── Init heading state ─────────────────────────────────────────────────────
@@ -246,10 +265,10 @@ async def run_forklift() -> None:
     smooth_heading  = raw_yaw
     prev_heading_err = 0.0
 
-    _log("info", f"Phase 3 patrol START -- {len(WAYPOINTS)} waypoints, looping forever", diag)
+    _log("info", f"[{forklift_id}] Phase 3 patrol START -- {len(WAYPOINTS)} waypoints, start_wp={start_wp}, looping forever", diag)
 
     frame      = 0
-    wp_index   = 0
+    wp_index   = start_wp % len(WAYPOINTS)
     lap        = 0
     forward_min            = 9.9   # nearest validated forward-cone hit this frame
     repulsion_steer        = 0.0   # APF lateral repulsion this frame (deg, added to PD steer)
@@ -317,7 +336,7 @@ async def run_forklift() -> None:
 
         if LIDAR_ENABLED and lidar_if is not None:
             try:
-                depths = lidar_if.get_linear_depth_data(LIDAR_PRIM_PATH)
+                depths = lidar_if.get_linear_depth_data(lidar_prim_path)
                 if depths is not None and depths.size >= 360:
                     flat = [float(d) for d in depths.flat]
                     n    = len(flat)
@@ -571,6 +590,7 @@ async def run_forklift() -> None:
                 "CLEAR"
             )
             state = {
+                "forklift_id":  forklift_id,
                 "frame":        frame,
                 "x":            round(fx, 2),
                 "y":            round(fy, 2),
@@ -588,7 +608,7 @@ async def run_forklift() -> None:
                 "waypoints":    WAYPOINTS,
             }
             try:
-                with open(STATE_JSON, "w") as _sf:
+                with open(state_json, "w") as _sf:
                     json.dump(state, _sf)
             except Exception:
                 pass
@@ -609,17 +629,20 @@ async def run_forklift() -> None:
 
         frame += 1
         await app.next_update_async()
-    diag.write("ARRIVED — controller stopped\n")
+    diag.write(f"[{forklift_id}] ARRIVED — controller stopped\n")
     diag.close()
-    _log("info", "All waypoints reached. Stopped.")
+    _log("info", f"[{forklift_id}] All waypoints reached. Stopped.")
 
 
-# ── Task management ───────────────────────────────────────────────────────────
+# ── Task management — launch all 4 forklifts ─────────────────────────────────
 
-_TASK_KEY = "_forklift_controller_task"
-_existing = getattr(asyncio.get_event_loop(), _TASK_KEY, None)
-if _existing and not _existing.done():
-    _existing.cancel()
+for _fid in FORKLIFT_IDS:
+    _TASK_KEY = f"_forklift_controller_task_{_fid}"
+    _existing = getattr(asyncio.get_event_loop(), _TASK_KEY, None)
+    if _existing and not _existing.done():
+        _existing.cancel()
 
-_task = asyncio.ensure_future(run_forklift())
-setattr(asyncio.get_event_loop(), _TASK_KEY, _task)
+for _i, _fid in enumerate(FORKLIFT_IDS):
+    _TASK_KEY = f"_forklift_controller_task_{_fid}"
+    _task = asyncio.ensure_future(run_forklift(_fid, start_wp=_i % len(WAYPOINTS)))
+    setattr(asyncio.get_event_loop(), _TASK_KEY, _task)

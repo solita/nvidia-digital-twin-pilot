@@ -12,7 +12,7 @@ from launch_ros.actions import Node, PushRosNamespace
 
 
 def generate_launch_description():
-    num_forklifts = int(os.environ.get("NUM_FORKLIFTS", "1"))
+    num_forklifts = int(os.environ.get("NUM_FORKLIFTS", "4"))
 
     ld = LaunchDescription()
 

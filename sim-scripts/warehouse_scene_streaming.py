@@ -33,10 +33,13 @@ SCENE_USD = os.environ.get(
     "/sim-scripts/scenes/scene_assembly.usd",
 )
 
-FORKLIFT_PRIM_PATH = "/World/forklift_b"
-FORKLIFT_BODY_PATH = "/World/forklift_b/body"
-DRIVE_JOINT_PATH = "/World/forklift_b/back_wheel_joints/back_wheel_drive"
-STEER_JOINT_PATH = "/World/forklift_b/back_wheel_joints/back_wheel_swivel"
+FORKLIFT_IDS = [f"forklift_{i}" for i in range(4)]
+
+# Default paths (forklift_0) used for single-forklift verification
+FORKLIFT_PRIM_PATH = "/World/forklift_0"
+FORKLIFT_BODY_PATH = "/World/forklift_0/body"
+DRIVE_JOINT_PATH = "/World/forklift_0/back_wheel_joints/back_wheel_drive"
+STEER_JOINT_PATH = "/World/forklift_0/back_wheel_joints/back_wheel_swivel"
 
 WHEEL_RADIUS = 0.15
 WHEEL_DISTANCE = 1.0
@@ -78,7 +81,16 @@ def setup_physics(stage: Usd.Stage) -> None:
 
 
 def create_ros2_bridge_graph(stage: Usd.Stage) -> None:
-    graph_path = "/World/ROS2BridgeGraph"
+    """Create one OmniGraph per forklift for ROS 2 bridge."""
+    for fid in FORKLIFT_IDS:
+        _create_ros2_bridge_graph_for(stage, fid)
+    log(f"ROS 2 bridge OmniGraphs created for {len(FORKLIFT_IDS)} forklifts")
+
+
+def _create_ros2_bridge_graph_for(stage: Usd.Stage, fid: str) -> None:
+    fl_prim  = f"/World/{fid}"
+    fl_body  = f"/World/{fid}/body"
+    graph_path = f"/World/ROS2BridgeGraph_{fid}"
 
     existing = stage.GetPrimAtPath(graph_path)
     if existing.IsValid():
@@ -126,26 +138,26 @@ def create_ros2_bridge_graph(stage: Usd.Stage) -> None:
                 ("compute_odom.outputs:angularVelocity", "odom_pub.inputs:angularVelocity"),
             ],
             keys.SET_VALUES: [
-                ("twist_sub.inputs:topicName", "/forklift_0/cmd_vel"),
+                ("twist_sub.inputs:topicName", f"/{fid}/cmd_vel"),
                 ("diff_controller.inputs:wheelRadius", WHEEL_RADIUS),
                 ("diff_controller.inputs:wheelDistance", WHEEL_DISTANCE),
                 ("diff_controller.inputs:maxLinearSpeed", 0.5),
                 ("diff_controller.inputs:maxAngularSpeed", 1.0),
-                ("art_controller.inputs:targetPrim", FORKLIFT_PRIM_PATH),
-                ("compute_odom.inputs:chassisPrim", FORKLIFT_BODY_PATH),
-                ("odom_pub.inputs:topicName", "/forklift_0/odom"),
-                ("odom_pub.inputs:chassisFrameId", "forklift_0/base_link"),
+                ("art_controller.inputs:targetPrim", fl_prim),
+                ("compute_odom.inputs:chassisPrim", fl_body),
+                ("odom_pub.inputs:topicName", f"/{fid}/odom"),
+                ("odom_pub.inputs:chassisFrameId", f"{fid}/base_link"),
                 ("odom_pub.inputs:odomFrameId", "odom"),
-                ("joint_state_pub.inputs:topicName", "/forklift_0/joint_states"),
-                ("joint_state_pub.inputs:targetPrim", FORKLIFT_PRIM_PATH),
+                ("joint_state_pub.inputs:topicName", f"/{fid}/joint_states"),
+                ("joint_state_pub.inputs:targetPrim", fl_prim),
                 ("tf_pub.inputs:topicName", "/tf"),
-                ("tf_pub.inputs:targetPrims", [FORKLIFT_PRIM_PATH]),
+                ("tf_pub.inputs:targetPrims", [fl_prim]),
                 ("clock_pub.inputs:topicName", "/clock"),
             ],
         },
     )
 
-    log("ROS 2 bridge OmniGraph created")
+    log(f"ROS 2 bridge OmniGraph created for {fid}")
     return graph
 
 
@@ -198,10 +210,11 @@ async def setup_scene():
         log("ERROR: Stage is None after opening")
         return
 
-    # Verify key prims
+    # Verify key prims — check first forklift
     forklift_prim = stage.GetPrimAtPath(FORKLIFT_PRIM_PATH)
     if not forklift_prim.IsValid():
         log(f"WARNING: Forklift prim not found at {FORKLIFT_PRIM_PATH}")
+        log("  → Run populate_scene.py remotely first to create forklift_0..3")
 
     # Configure physics
     setup_physics(stage)
@@ -239,6 +252,12 @@ async def setup_scene():
     omni.timeline.get_timeline_interface().play()
 
     log("Timeline started — simulation running")
+
+    # Write sentinel file for Docker healthcheck
+    with open("/tmp/isaac-sim-ready", "w") as f:
+        f.write("ready\n")
+
+    log("Isaac Sim Full Streaming App is loaded.")
 
 
 # ---------------------------------------------------------------------------
