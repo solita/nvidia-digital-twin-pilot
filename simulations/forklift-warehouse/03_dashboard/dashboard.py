@@ -620,16 +620,42 @@ function handleData(data) {
 }
 
 // ── WebSocket with auto-reconnect ────────────────────────────────────
+let _lastMsgTime = Date.now();
+
 function connectWS() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.onmessage = (e) => { handleData(JSON.parse(e.data)); };
+  ws.onmessage = (e) => { _lastMsgTime = Date.now(); handleData(JSON.parse(e.data)); };
   ws.onclose   = () => { setTimeout(connectWS, 1000); };
   ws.onerror   = () => { ws.close(); };
 }
 
+// REST poll fallback — runs every 1 s regardless of WS state.
+// Keeps the dashboard live even when WS is blocked by the tunnel/proxy.
+setInterval(() => {
+  fetch("/api/state", { cache:"no-store" })
+    .then(r => r.json())
+    .then(data => { _lastMsgTime = Date.now(); handleData(data); })
+    .catch(() => {});
+}, 1000);
+
+// Stale guard: if nothing (WS or REST) arrived for 4 s, mark STALE
+setInterval(() => {
+  if (Date.now() - _lastMsgTime > 4000) {
+    const tag = document.getElementById("liveTag");
+    if (tag) { tag.textContent = "STALE"; tag.className = "pill stale"; }
+  }
+}, 1000);
+
 window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
+
+// Draw immediately on load using REST so the map isn't blank before the first WS push
+fetch("/api/state", { cache:"no-store" })
+  .then(r => r.json())
+  .then(handleData)
+  .catch(() => { drawScene(); });  // at minimum paint the warehouse if sim not running
+
 connectWS();
 </script>
 </body>
@@ -658,15 +684,19 @@ def get_state():
 async def ws_state(websocket: WebSocket):
     await websocket.accept()
     last_mtime: int = 0
+    last_push: float = 0.0
     try:
         while True:
             try:
                 mt = os.stat(STATE_FILE).st_mtime_ns
             except OSError:
                 mt = 0
-            if mt != last_mtime:
+            now = asyncio.get_event_loop().time()
+            # Push immediately on file change, or every 2 s as a heartbeat
+            if mt != last_mtime or (now - last_push) >= 2.0:
                 last_mtime = mt
+                last_push  = now
                 await websocket.send_json(_read_state())
-            await asyncio.sleep(0.05)  # 50 ms check interval
+            await asyncio.sleep(0.05)  # 50 ms poll interval
     except WebSocketDisconnect:
         pass
