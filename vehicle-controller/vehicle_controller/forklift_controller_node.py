@@ -123,7 +123,7 @@ class ForkliftControllerNode(Node):
 
         # -- Publishers --
         self.cmd_vel_pub = self.create_publisher(
-            Twist, f"/{ns}/cmd_vel", BEST_EFFORT_QOS
+            Twist, f"/{ns}/cmd_vel", RELIABLE_QOS
         )
         self.fork_cmd_pub = self.create_publisher(
             Float64, f"/{ns}/fork_cmd", BEST_EFFORT_QOS

@@ -14,11 +14,11 @@
 services:
   # --- FastDDS Discovery Server ---
   discovery-server:
-    image: ros:humble
+    image: ros:jazzy
     network_mode: host
     command: >
       bash -c "
-        source /opt/ros/humble/setup.bash &&
+        source /opt/ros/jazzy/setup.bash &&
         fast-discovery-server -i 0 -p 11811
       "
     restart: unless-stopped
@@ -64,9 +64,10 @@ services:
       - ISAACSIM_STREAM_PORT=${ISAACSIM_STREAM_PORT:-47998}
       - ROS_DOMAIN_ID=42
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-      - ROS_DISCOVERY_SERVER=localhost:11811
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/fastdds_no_shm.xml
       - SCENE_USD=/sim-scripts/scenes/scene_assembly.usd
     volumes:
+      - ./fastdds_no_shm.xml:/fastdds_no_shm.xml:ro
       - ./sim-scripts:/sim-scripts
       - ./simulations/forklift-warehouse/01_scenes:/sim-scripts/scenes
       - ./simulations/forklift-warehouse/02_core_scripts:/sim-scripts/core_scripts:ro
@@ -82,8 +83,6 @@ services:
       start_period: 300s
       retries: 10
     depends_on:
-      discovery-server:
-        condition: service_healthy
       isaac-sim-init:
         condition: service_completed_successfully
     restart: unless-stopped
@@ -119,17 +118,16 @@ services:
     environment:
       - ROS_DOMAIN_ID=42
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-      - ROS_DISCOVERY_SERVER=localhost:11811
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/fastdds_no_shm.xml
       - NUM_FORKLIFTS=1
+    volumes:
+      - ./fastdds_no_shm.xml:/fastdds_no_shm.xml:ro
     command: >
       bash -c "
-        source /opt/ros/humble/setup.bash &&
+        source /opt/ros/jazzy/setup.bash &&
         source /ros2_ws/install/setup.bash &&
         ros2 launch vehicle_controller multi_forklift.launch.py
       "
-    depends_on:
-      discovery-server:
-        condition: service_healthy
     restart: unless-stopped
 
   # --- Warehouse Manager (Phase 2) ---
@@ -141,17 +139,16 @@ services:
     environment:
       - ROS_DOMAIN_ID=42
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-      - ROS_DISCOVERY_SERVER=localhost:11811
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/fastdds_no_shm.xml
       - REDIS_URL=redis://localhost:6379
+    volumes:
+      - ./fastdds_no_shm.xml:/fastdds_no_shm.xml:ro
     command: >
       bash -c "
-        source /opt/ros/humble/setup.bash &&
+        source /opt/ros/jazzy/setup.bash &&
         source /ros2_ws/install/setup.bash &&
         uvicorn main:app --host 0.0.0.0 --port 8000
       "
-    depends_on:
-      discovery-server:
-        condition: service_healthy
     restart: unless-stopped
 
   # --- Redis ---

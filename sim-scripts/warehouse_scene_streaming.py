@@ -22,7 +22,39 @@ import omni.graph.core as og
 import omni.kit.app
 import omni.timeline
 import omni.usd
+import usdrt
 from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics
+
+# ---------------------------------------------------------------------------
+# Fix FastDDS shared-memory transport (must happen before ROS 2 bridge loads)
+# Isaac Sim container runs with ipc=private, so SHM segments are invisible
+# to other containers. Force UDP-only transport for ROS 2 DDS data.
+# ---------------------------------------------------------------------------
+_fastdds_xml = "/tmp/fastdds_no_shm.xml"
+if not os.path.exists(_fastdds_xml):
+    with open(_fastdds_xml, "w") as _f:
+        _f.write('<?xml version="1.0" encoding="UTF-8" ?>\n'
+                 '<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">\n'
+                 '  <transport_descriptors>\n'
+                 '    <transport_descriptor>\n'
+                 '      <transport_id>udp_only</transport_id>\n'
+                 '      <type>UDPv4</type>\n'
+                 '      <sendBufferSize>1048576</sendBufferSize>\n'
+                 '      <receiveBufferSize>1048576</receiveBufferSize>\n'
+                 '    </transport_descriptor>\n'
+                 '  </transport_descriptors>\n'
+                 '  <participant profile_name="participant_profile" is_default_profile="true">\n'
+                 '    <rtps>\n'
+                 '      <useBuiltinTransports>false</useBuiltinTransports>\n'
+                 '      <userTransports>\n'
+                 '        <transport_id>udp_only</transport_id>\n'
+                 '      </userTransports>\n'
+                 '    </rtps>\n'
+                 '  </participant>\n'
+                 '</profiles>\n')
+if not os.environ.get("FASTRTPS_DEFAULT_PROFILES_FILE"):
+    os.environ["FASTRTPS_DEFAULT_PROFILES_FILE"] = _fastdds_xml
+    print(f"[warehouse_scene_streaming] FastDDS SHM disabled via {_fastdds_xml}", flush=True)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -43,6 +75,18 @@ STEER_JOINT_PATH = "/World/forklift_0/back_wheel_joints/back_wheel_swivel"
 
 WHEEL_RADIUS = 0.15
 WHEEL_DISTANCE = 1.0
+
+# Joint drive scales — ArticulationController works in SI units (rad/s, rad)
+# linear.x (m/s) → drive joint angular velocity (rad/s)
+# Negative because DRIVE_VELOCITY < 0 means forks-forward in this USD asset.
+DRIVE_SCALE = -1.0 / WHEEL_RADIUS  # ≈ −6.667 rad/s per m/s
+# angular.z (rad/s) → steer joint position (radians)
+STEER_SCALE = math.radians(20.0)    # rad of steer per rad/s of angular cmd
+STEER_MAX   = math.radians(30.0)    # max steer angle (rad)
+# Joint physics parameters (DriveAPI stiffness/damping — set before sim starts)
+STEER_STIFFNESS = 40_000.0
+STEER_DAMPING   = 10_000.0
+DRIVE_DAMPING   = 15_000.0
 
 ROS_DOMAIN_ID = int(os.environ.get("ROS_DOMAIN_ID", "42"))
 PHYSICS_DT = 1.0 / 60.0
@@ -80,14 +124,28 @@ def setup_physics(stage: Usd.Stage) -> None:
     log("PhysX configured: TGS solver, GPU dynamics, 60Hz, Z-up gravity")
 
 
-def create_ros2_bridge_graph(stage: Usd.Stage) -> None:
-    """Create one OmniGraph per forklift for ROS 2 bridge."""
+def create_ros2_bridge_graph(stage: Usd.Stage) -> dict:
+    """Create one OmniGraph per forklift for ROS 2 bridge.
+
+    Returns dict of {fid: (twist_sub_node, drive_ctrl_node, steer_ctrl_node)}.
+    """
+    forklift_nodes = {}
     for fid in FORKLIFT_IDS:
-        _create_ros2_bridge_graph_for(stage, fid)
+        nodes_tuple = _create_ros2_bridge_graph_for(stage, fid)
+        forklift_nodes[fid] = nodes_tuple
     log(f"ROS 2 bridge OmniGraphs created for {len(FORKLIFT_IDS)} forklifts")
+    return forklift_nodes
 
 
-def _create_ros2_bridge_graph_for(stage: Usd.Stage, fid: str) -> None:
+def _create_ros2_bridge_graph_for(stage: Usd.Stage, fid: str):
+    """Create OmniGraph for ROS 2 bridge with ArticulationController.
+
+    Uses IsaacArticulationController nodes (the proven approach from
+    nvidia-simu-test) instead of DriveAPI attribute setting, which does
+    not propagate to PhysX at runtime with GPU dynamics.
+
+    Returns (twist_sub_node, drive_ctrl_node, steer_ctrl_node).
+    """
     fl_prim  = f"/World/{fid}"
     fl_body  = f"/World/{fid}/body"
     graph_path = f"/World/ROS2BridgeGraph_{fid}"
@@ -104,61 +162,49 @@ def _create_ros2_bridge_graph_for(stage: Usd.Stage, fid: str) -> None:
                 ("on_playback_tick", "omni.graph.action.OnPlaybackTick"),
                 ("clock_pub", "isaacsim.ros2.bridge.ROS2PublishClock"),
                 ("twist_sub", "isaacsim.ros2.bridge.ROS2SubscribeTwist"),
-                ("break_linear", "omni.graph.nodes.BreakVector3"),
-                ("break_angular", "omni.graph.nodes.BreakVector3"),
-                ("diff_controller", "isaacsim.robot.wheeled_robots.DifferentialController"),
-                ("art_controller", "isaacsim.core.nodes.IsaacArticulationController"),
                 ("compute_odom", "isaacsim.core.nodes.IsaacComputeOdometry"),
                 ("odom_pub", "isaacsim.ros2.bridge.ROS2PublishOdometry"),
-                ("joint_state_pub", "isaacsim.ros2.bridge.ROS2PublishJointState"),
-                ("tf_pub", "isaacsim.ros2.bridge.ROS2PublishTransformTree"),
                 ("read_sim_time", "isaacsim.core.nodes.IsaacReadSimulationTime"),
+                # ArticulationController nodes — proven pattern from reference
+                ("drive_controller", "isaacsim.core.nodes.IsaacArticulationController"),
+                ("steer_controller", "isaacsim.core.nodes.IsaacArticulationController"),
             ],
             keys.CONNECT: [
                 ("on_playback_tick.outputs:tick", "clock_pub.inputs:execIn"),
                 ("on_playback_tick.outputs:tick", "twist_sub.inputs:execIn"),
                 ("on_playback_tick.outputs:tick", "compute_odom.inputs:execIn"),
-                ("on_playback_tick.outputs:tick", "joint_state_pub.inputs:execIn"),
-                ("on_playback_tick.outputs:tick", "tf_pub.inputs:execIn"),
-                ("twist_sub.outputs:execOut", "diff_controller.inputs:execIn"),
-                ("twist_sub.outputs:linearVelocity", "break_linear.inputs:tuple"),
-                ("twist_sub.outputs:angularVelocity", "break_angular.inputs:tuple"),
-                ("break_linear.outputs:x", "diff_controller.inputs:linearVelocity"),
-                ("break_angular.outputs:z", "diff_controller.inputs:angularVelocity"),
-                ("on_playback_tick.outputs:tick", "art_controller.inputs:execIn"),
-                ("diff_controller.outputs:velocityCommand", "art_controller.inputs:velocityCommand"),
                 ("read_sim_time.outputs:simulationTime", "clock_pub.inputs:timeStamp"),
                 ("read_sim_time.outputs:simulationTime", "odom_pub.inputs:timeStamp"),
-                ("read_sim_time.outputs:simulationTime", "joint_state_pub.inputs:timeStamp"),
-                ("read_sim_time.outputs:simulationTime", "tf_pub.inputs:timeStamp"),
                 ("compute_odom.outputs:execOut", "odom_pub.inputs:execIn"),
                 ("compute_odom.outputs:position", "odom_pub.inputs:position"),
                 ("compute_odom.outputs:orientation", "odom_pub.inputs:orientation"),
                 ("compute_odom.outputs:linearVelocity", "odom_pub.inputs:linearVelocity"),
                 ("compute_odom.outputs:angularVelocity", "odom_pub.inputs:angularVelocity"),
+                # Tick drives articulation controllers every frame
+                ("on_playback_tick.outputs:tick", "drive_controller.inputs:execIn"),
+                ("on_playback_tick.outputs:tick", "steer_controller.inputs:execIn"),
             ],
             keys.SET_VALUES: [
                 ("twist_sub.inputs:topicName", f"/{fid}/cmd_vel"),
-                ("diff_controller.inputs:wheelRadius", WHEEL_RADIUS),
-                ("diff_controller.inputs:wheelDistance", WHEEL_DISTANCE),
-                ("diff_controller.inputs:maxLinearSpeed", 0.5),
-                ("diff_controller.inputs:maxAngularSpeed", 1.0),
-                ("art_controller.inputs:targetPrim", fl_prim),
-                ("compute_odom.inputs:chassisPrim", fl_body),
+                ("compute_odom.inputs:chassisPrim", [usdrt.Sdf.Path(fl_body)]),
                 ("odom_pub.inputs:topicName", f"/{fid}/odom"),
                 ("odom_pub.inputs:chassisFrameId", f"{fid}/base_link"),
                 ("odom_pub.inputs:odomFrameId", "odom"),
-                ("joint_state_pub.inputs:topicName", f"/{fid}/joint_states"),
-                ("joint_state_pub.inputs:targetPrim", fl_prim),
-                ("tf_pub.inputs:topicName", "/tf"),
-                ("tf_pub.inputs:targetPrims", [fl_prim]),
                 ("clock_pub.inputs:topicName", "/clock"),
+                # Drive controller — velocity control on rear drive wheel
+                ("drive_controller.inputs:targetPrim", [usdrt.Sdf.Path(fl_prim)]),
+                ("drive_controller.inputs:jointNames", ["back_wheel_drive"]),
+                # Steer controller — position control on rear steer pivot
+                ("steer_controller.inputs:targetPrim", [usdrt.Sdf.Path(fl_prim)]),
+                ("steer_controller.inputs:jointNames", ["back_wheel_swivel"]),
             ],
         },
     )
 
     log(f"ROS 2 bridge OmniGraph created for {fid}")
-    return graph
+    # Node indices in CREATE_NODES: 0=tick 1=clock 2=twist 3=odom 4=odom_pub
+    #   5=sim_time 6=drive_ctrl 7=steer_ctrl
+    return nodes[2], nodes[6], nodes[7]
 
 
 def create_pick_item(stage: Usd.Stage) -> None:
@@ -180,6 +226,75 @@ def create_pick_item(stage: Usd.Stage) -> None:
     mass_api.CreateMassAttr(5.0)
 
     log("Created pick box at (5.0, 10.0, 0.6)")
+
+
+# ---------------------------------------------------------------------------
+# cmd_vel → joint drive bridge (replaces ros2_cmd_bridge.py)
+# ---------------------------------------------------------------------------
+
+def setup_joint_physics(stage: Usd.Stage) -> None:
+    """Apply DriveAPI with stiffness/damping on drive and steer joints.
+
+    These USD-level parameters are read by PhysX at sim init and define
+    HOW the joints respond to targets.  Runtime targets are set by the
+    IsaacArticulationController OG nodes, not here.
+    """
+    for fid in FORKLIFT_IDS:
+        drive_path = f"/World/{fid}/back_wheel_joints/back_wheel_drive"
+        steer_path = f"/World/{fid}/back_wheel_joints/back_wheel_swivel"
+
+        dp = stage.GetPrimAtPath(drive_path)
+        sp = stage.GetPrimAtPath(steer_path)
+
+        if dp.IsValid():
+            api = UsdPhysics.DriveAPI.Apply(dp, "angular")
+            api.GetStiffnessAttr().Set(0.0)        # pure velocity control
+            api.GetDampingAttr().Set(DRIVE_DAMPING)
+
+        if sp.IsValid():
+            api = UsdPhysics.DriveAPI.Apply(sp, "angular")
+            api.GetStiffnessAttr().Set(STEER_STIFFNESS)
+            api.GetDampingAttr().Set(STEER_DAMPING)
+
+    log(f"Joint DriveAPI configured for {len(FORKLIFT_IDS)} forklifts")
+
+
+async def cmd_vel_bridge_loop(forklift_nodes: dict, stage: Usd.Stage) -> None:
+    """Per-frame: read cmd_vel from OG twist_sub → set ArticulationController targets."""
+    app = omni.kit.app.get_app()
+
+    log(f"cmd_vel bridge loop running — {len(forklift_nodes)} forklifts")
+
+    frame = 0
+    while True:
+        for fid, (twist_node, drive_node, steer_node) in forklift_nodes.items():
+            try:
+                lin = og.Controller.attribute("outputs:linearVelocity", twist_node).get()
+                ang = og.Controller.attribute("outputs:angularVelocity", twist_node).get()
+                if lin is None or ang is None:
+                    continue
+
+                linear_x  = float(lin[0])
+                angular_z = float(ang[2])
+
+                # Drive: set velocity target (rad/s) on ArticulationController
+                drive_vel = linear_x * DRIVE_SCALE
+                og.Controller.attribute("inputs:velocityCommand", drive_node).set([drive_vel])
+
+                # Steer: set position target (rad) on ArticulationController
+                steer_rad = angular_z * STEER_SCALE
+                steer_rad = max(-STEER_MAX, min(STEER_MAX, steer_rad))
+                og.Controller.attribute("inputs:positionCommand", steer_node).set([steer_rad])
+
+                if frame % 600 == 0 and (abs(linear_x) > 0.01 or abs(angular_z) > 0.01):
+                    log(f"{fid}: lin={linear_x:.2f} m/s  ang={angular_z:.2f} rad/s "
+                        f"→ drive={drive_vel:.2f} rad/s  steer={math.degrees(steer_rad):.1f}°")
+
+            except Exception:
+                pass
+
+        frame += 1
+        await app.next_update_async()
 
 
 # ---------------------------------------------------------------------------
@@ -249,8 +364,11 @@ async def setup_scene():
             if art_api_body:
                 log(f"Articulation root also at {FORKLIFT_BODY_PATH}")
 
-    # Create ROS 2 bridge
-    create_ros2_bridge_graph(stage)
+    # Configure joint DriveAPI (stiffness/damping) before sim starts
+    setup_joint_physics(stage)
+
+    # Create ROS 2 bridge with ArticulationController nodes
+    forklift_nodes = create_ros2_bridge_graph(stage)
 
     # Create pick item
     create_pick_item(stage)
@@ -261,6 +379,10 @@ async def setup_scene():
     omni.timeline.get_timeline_interface().play()
 
     log("Timeline started — simulation running")
+
+    # Start the cmd_vel → ArticulationController bridge loop
+    asyncio.ensure_future(cmd_vel_bridge_loop(forklift_nodes, stage))
+    log("cmd_vel bridge loop started")
 
     # Write sentinel file for Docker healthcheck
     with open("/tmp/isaac-sim-ready", "w") as f:

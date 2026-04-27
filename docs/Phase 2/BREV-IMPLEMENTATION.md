@@ -1,7 +1,7 @@
-# Brev Instance — Implementation Plan
+# Brev Instance — Implementation Guide
 
 > **Scope**: Everything that runs on the Brev GPU instance.
-> **Phases 1–3**: All components (Isaac Sim, vehicle controller, warehouse manager, Redis) run here on one machine.
+> **Current state (2026-04-27)**: Phase 1 complete — single forklift drives via ROS 2 cmd_vel from the vehicle-controller container. All services run on Brev via `brev-compose.yml`.
 > **Phase 4+**: Only Isaac Sim, vehicle controller, FastDDS discovery server. Warehouse manager moves to local machine.
 
 ---
@@ -10,10 +10,12 @@
 
 ### 0.1: Provision Brev Instance
 
-- GPU: A10G (24 GB VRAM) minimum, L40 (48 GB) preferred for multi-forklift scenes
-- OS: Ubuntu 22.04 (matches ROS 2 Humble)
-- Disk: 100 GB minimum (Isaac Sim images are ~20 GB, shader cache ~5 GB)
-- NVIDIA driver: **550+** required for Isaac Sim 5.x containers
+| Requirement | Value |
+|---|---|
+| GPU | L40S (48 GB VRAM) — confirmed working. A10G (24 GB) minimum |
+| OS | Ubuntu 22.04 |
+| Disk | 100 GB minimum (Isaac Sim image ~20 GB, shader cache ~5 GB) |
+| NVIDIA driver | **550+** required for Isaac Sim 5.x (current: 580, CUDA 13.0) |
 
 Verify GPU access:
 
@@ -56,55 +58,26 @@ docker compose version
 # Must show v2.x
 ```
 
-### 0.4: Install ROS 2 Humble (host — for debugging)
+### 0.4: ROS 2 on Host — NOT Needed
 
-Needed for `ros2 topic list`, `ros2 topic echo`, etc. during development. Production runs inside containers.
-
-```bash
-sudo apt install -y software-properties-common
-sudo add-apt-repository universe
-sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
-  -o /usr/share/keyrings/ros-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
-  http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | \
-  sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
-sudo apt update && sudo apt install -y ros-humble-desktop
-echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
-source ~/.bashrc
-```
-
-### 0.5: Install Tailscale (needed from Phase 4)
+All ROS 2 runs inside containers (`ros:jazzy`). No host ROS 2 installation required. For debugging, exec into a container:
 
 ```bash
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up
-# Sign in with the SAME Tailscale account used on your local machine
-# Note the Tailscale IP — local machine will need this
-tailscale ip -4
+docker exec -it nvidia-digital-twin-pilot-vehicle-controller-1 \
+  bash -c "source /opt/ros/jazzy/setup.bash && \
+           source /ros2_ws/install/setup.bash && \
+           ros2 topic list"
 ```
 
-Save the Brev Tailscale IP in your project `.env` file (create it if it doesn't exist):
+### 0.5: Clone Repository
 
 ```bash
-# In the repo root
-echo "BREV_TAILSCALE_IP=$(tailscale ip -4)" >> .env
+cd ~/docker/isaac-sim/data
+git clone <REPO_URL> nvidia-digital-twin-pilot
+cd nvidia-digital-twin-pilot
 ```
 
-Verify connectivity from your **local machine**:
-
-```bash
-ping <brev-tailscale-ip>
-```
-
-### 0.6: Clone Monorepo
-
-```bash
-cd ~
-git clone <REPO_URL> warehouse-sim
-cd warehouse-sim
-```
-
-### 0.7: Pull Isaac Sim Container Image (slow — do early)
+### 0.6: Pull Isaac Sim Container Image (slow — do early)
 
 ```bash
 # Authenticate with NGC
@@ -115,150 +88,203 @@ docker login nvcr.io
 docker pull nvcr.io/nvidia/isaac-sim:5.1.0
 ```
 
-**⚠ GOTCHA**: First pull is ~20 GB. First run compiles shaders (~2-5 min). To pre-warm:
+**IMPORTANT**: First pull is ~20 GB. First run compiles shaders (~2-5 min). The compose file handles shader cache persistence via named Docker volumes.
 
-```bash
-docker run --rm --gpus all --network host \
-  -e ACCEPT_EULA=Y \
-  nvcr.io/nvidia/isaac-sim:5.1.0 \
-  ./runheadless.sh -v
-# Wait until you see "Isaac Sim Ready" then Ctrl+C
-# Shader cache is now in the Docker layer cache — won't help across runs
-# For persistent cache, mount a volume (see compose file below)
+---
+
+## 1. Architecture Overview
+
+### 1.1: Tech Stack
+
+| Component | Image / Runtime | ROS Distro | Python |
+|---|---|---|---|
+| Isaac Sim | `nvcr.io/nvidia/isaac-sim:5.1.0` | Jazzy (bundled) | 3.10 (Kit embedded) |
+| Discovery Server | `ros:jazzy` | Jazzy | — |
+| Vehicle Controller | Custom from `ros:jazzy` | Jazzy | 3.12 |
+| Warehouse Manager | Custom from `ros:jazzy` | Jazzy | 3.12 |
+| Redis | `redis:7-alpine` | — | — |
+| Web Viewer | Custom Node.js | — | — |
+
+**CRITICAL**: Isaac Sim 5.1.0 uses ROS 2 Jazzy internally. All sidecar containers **MUST** use `ros:jazzy`, not `ros:humble`. Humble containers discover via DDS but fail to deserialize messages due to ABI mismatch.
+
+### 1.2: DDS Configuration
+
+The project uses FastDDS with **shared memory disabled** (`fastdds_no_shm.xml`) and **simple multicast discovery** (no discovery server needed for intra-host). All containers use `network_mode: host` so they share the host network stack.
+
+**`fastdds_no_shm.xml`** — mounted into all containers:
+
+```xml
+<?xml version="1.0" encoding="UTF-8" ?>
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>udp_only</transport_id>
+      <type>UDPv4</type>
+      <sendBufferSize>1048576</sendBufferSize>
+      <receiveBufferSize>1048576</receiveBufferSize>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="participant_profile" is_default_profile="true">
+    <rtps>
+      <useBuiltinTransports>false</useBuiltinTransports>
+      <userTransports>
+        <transport_id>udp_only</transport_id>
+      </userTransports>
+    </rtps>
+  </participant>
+</profiles>
 ```
 
-### 0.8: Verify Isaac Sim ROS 2 Bridge
+**Why SHM is disabled**: Isaac Sim container runs with `ipc=private` (Docker default), so SHM segments are invisible to other containers. UDP works cross-container with `network_mode: host`.
 
-Isaac Sim 5.x has a built-in ROS 2 bridge (Humble). Verify it works:
+### 1.3: Environment Variables (all containers)
 
-```bash
-# Terminal 1: Run Isaac Sim
-docker run --rm --gpus all --network host \
-  -e ACCEPT_EULA=Y \
-  -e ROS_DOMAIN_ID=42 \
-  nvcr.io/nvidia/isaac-sim:5.1.0 \
-  ./runheadless.sh
+| Variable | Value | Notes |
+|---|---|---|
+| `ROS_DOMAIN_ID` | `42` | Must match everywhere |
+| `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | FastDDS — default in Jazzy |
+| `FASTRTPS_DEFAULT_PROFILES_FILE` | `/fastdds_no_shm.xml` | Disables SHM transport |
+| `ACCEPT_EULA` | `Y` | Isaac Sim only |
+| `PRIVACY_CONSENT` | `Y` | Isaac Sim only |
 
-# Terminal 2: Check topics from host
-export ROS_DOMAIN_ID=42
-ros2 topic list
-# Should show /clock at minimum once a scene with ROS bridge is loaded
+---
+
+## 2. Repository Structure (Brev-relevant parts)
+
+```
+nvidia-digital-twin-pilot/
+├── brev-compose.yml                 ← PRIMARY — all-in-one compose (current)
+├── brev-compose-phase4.yml          ← Future split (sim + controller only, OUTDATED)
+├── fastdds_no_shm.xml              ← DDS config, disables shared memory
+├── fastdds_discovery.xml           ← Discovery server XML (Phase 4)
+├── fastdds_client.xml              ← Discovery client XML (Phase 4, local side)
+├── Makefile                        ← make brev-up, brev-down, brev-logs, etc.
+├── run_phase1.sh                   ← Sequential startup script
+│
+├── warehouse_msgs/                 ← ROS 2 message definitions (ament_cmake)
+│   ├── CMakeLists.txt
+│   ├── package.xml
+│   ├── msg/
+│   │   ├── ForkliftStatus.msg
+│   │   ├── TaskAssignment.msg
+│   │   ├── TaskStatus.msg
+│   │   └── OrderStatus.msg
+│   └── srv/
+│       └── ResetSimulation.srv
+│
+├── sim-scripts/
+│   ├── warehouse_scene_streaming.py ← Kit --exec script (loads scene + ROS 2 bridge)
+│   └── warehouse_scene.py          ← Standalone script (unused in compose)
+│
+├── simulations/forklift-warehouse/
+│   ├── 01_scenes/                  ← USD scene files (scene_assembly.usd)
+│   ├── 02_core_scripts/            ← Sim helper scripts (populate_scene.py, etc.)
+│   └── 04_helper_scripts/          ← Debug/test scripts (ros2_test_maneuver.py, etc.)
+│
+├── vehicle-controller/             ← ROS 2 ament_python package
+│   ├── Dockerfile
+│   ├── package.xml
+│   ├── setup.py
+│   ├── setup.cfg
+│   ├── resource/vehicle_controller
+│   └── vehicle_controller/
+│       ├── __init__.py
+│       ├── forklift_controller_node.py
+│       ├── config/nav2_params.yaml
+│       └── launch/multi_forklift.launch.py
+│
+├── warehouse-manager/              ← FastAPI + ROS 2 hybrid
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   ├── main.py
+│   ├── main_phase1.py
+│   ├── models.py
+│   ├── dispatcher.py
+│   ├── scenario.py
+│   └── tests/test_dispatcher.py
+│
+├── dashboard/                      ← React + Vite + TypeScript
+│   ├── Dockerfile
+│   ├── package.json
+│   └── src/ (components, hooks, stores, types)
+│
+└── web-viewer/                     ← WebRTC viewer proxy
+    └── Dockerfile
 ```
 
 ---
 
-## 1. Phase 1 — Minimal Loop with ROS 2 (Everything on Brev)
+## 3. Message Definitions
 
-### 1.1: Project Scaffolding
+### 3.1: warehouse_msgs
 
-Create the monorepo structure (from the cloned repo root):
+Built as a standard `ament_cmake` package. Both the vehicle-controller and warehouse-manager Dockerfiles build it via `colcon build`.
 
-```bash
-cd ~/warehouse-sim
-mkdir -p warehouse_msgs/{msg,srv}
-mkdir -p sim-scripts
-mkdir -p vehicle-controller
-mkdir -p warehouse-manager
-mkdir -p dashboard  # placeholder for Phase 5
-```
-
-Create `warehouse_msgs/package.xml`:
+**`warehouse_msgs/package.xml`** — dependencies:
 
 ```xml
-<?xml version="1.0"?>
-<package format="3">
-  <name>warehouse_msgs</name>
-  <version>0.1.0</version>
-  <description>Warehouse Digital Twin message definitions</description>
-  <maintainer email="dev@example.com">dev</maintainer>
-  <license>MIT</license>
-
-  <buildtool_depend>ament_cmake</buildtool_depend>
-  <buildtool_depend>rosidl_default_generators</buildtool_depend>
-
-  <depend>geometry_msgs</depend>
-  <depend>builtin_interfaces</depend>
-
-  <exec_depend>rosidl_default_runtime</exec_depend>
-
-  <member_of_group>rosidl_interface_packages</member_of_group>
-</package>
+<buildtool_depend>ament_cmake</buildtool_depend>
+<buildtool_depend>rosidl_default_generators</buildtool_depend>
+<depend>std_msgs</depend>
+<depend>geometry_msgs</depend>
+<depend>builtin_interfaces</depend>
+<exec_depend>rosidl_default_runtime</exec_depend>
 ```
 
-Create `warehouse_msgs/CMakeLists.txt`:
+**`warehouse_msgs/CMakeLists.txt`** — generated interfaces:
 
 ```cmake
-cmake_minimum_required(VERSION 3.8)
-project(warehouse_msgs)
-
-find_package(ament_cmake REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
-find_package(geometry_msgs REQUIRED)
-find_package(builtin_interfaces REQUIRED)
-
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/ForkliftStatus.msg"
   "msg/TaskAssignment.msg"
   "msg/TaskStatus.msg"
-  "msg/ForkliftStatus.msg"
-  "srv/ResetSimulation.srv"
-  DEPENDENCIES geometry_msgs builtin_interfaces
+  "msg/OrderStatus.msg"
+  DEPENDENCIES std_msgs geometry_msgs builtin_interfaces
 )
-
-ament_package()
 ```
 
-### 1.2: Define Messages
+**Message definitions**:
 
-`warehouse_msgs/msg/TaskAssignment.msg`:
-
-```
-string task_id
-string order_id
-string forklift_id
-uint8 task_type
-geometry_msgs/Point source
-geometry_msgs/Point destination
-uint8 priority
-
-uint8 PICK=0
-uint8 DELIVER=1
-```
-
-`warehouse_msgs/msg/TaskStatus.msg`:
-
-```
-string task_id
-string forklift_id
-uint8 status
-string error_message
-builtin_interfaces/Time timestamp
-
-uint8 PENDING=0
-uint8 IN_PROGRESS=1
-uint8 COMPLETED=2
-uint8 FAILED=3
-```
-
-`warehouse_msgs/msg/ForkliftStatus.msg`:
-
+`msg/ForkliftStatus.msg`:
 ```
 string forklift_id
-uint8 state
+uint8 state              # 0=IDLE 1=NAV_TO_SHELF 2=PICKING 3=NAV_TO_DOCK 4=DROPPING 5=ERROR 6=RECOVERING
 geometry_msgs/Pose pose
 float32 battery_level
 string current_task_id
-
-uint8 IDLE=0
-uint8 NAVIGATING_TO_SHELF=1
-uint8 PICKING=2
-uint8 NAVIGATING_TO_DOCK=3
-uint8 DROPPING=4
-uint8 ERROR=5
-uint8 RECOVERING=6
+builtin_interfaces/Time stamp
 ```
 
-`warehouse_msgs/srv/ResetSimulation.srv`:
+`msg/TaskAssignment.msg`:
+```
+string task_id
+string forklift_id
+string order_id
+geometry_msgs/Point shelf_position
+geometry_msgs/Point dock_position
+uint8 priority
+builtin_interfaces/Time stamp
+```
 
+`msg/TaskStatus.msg`:
+```
+string task_id
+string forklift_id
+string status            # "pending", "in_progress", "completed", "cancelled", "failed"
+string detail
+builtin_interfaces/Time stamp
+```
+
+`msg/OrderStatus.msg`:
+```
+string order_id
+string status            # "pending", "in_progress", "completed", "cancelled"
+string[] items
+string assigned_forklift
+builtin_interfaces/Time stamp
+```
+
+`srv/ResetSimulation.srv`:
 ```
 bool clear_orders
 ---
@@ -266,556 +292,125 @@ bool success
 string message
 ```
 
-### 1.3: Build warehouse_msgs
-
-Create colcon workspace structure:
-
-```bash
-cd ~/warehouse-sim
-mkdir -p ros2_ws/src
-ln -s ~/warehouse-sim/warehouse_msgs ros2_ws/src/warehouse_msgs
-
-cd ros2_ws
-source /opt/ros/humble/setup.bash
-colcon build --packages-select warehouse_msgs
-source install/setup.bash
-
-# Verify
-ros2 interface show warehouse_msgs/msg/TaskAssignment
-```
-
-**⚠ GOTCHA**: colcon must be run from `ros2_ws/`, not from the monorepo root. The symlink approach keeps the source in the monorepo while colcon finds it.
-
-### 1.4: Isaac Sim Scene Setup
-
-Create `sim-scripts/warehouse_scene.py`. This is an Isaac Sim standalone script.
-
-**Key implementation details**:
-
-- **Coordinate system**: Isaac Sim uses meters, Y-up by default but robotics convention is Z-up. Force Z-up in the USD stage settings.
-- **Floor**: Use `isaacsim.core.prims.create_prim("/World/Floor", "Plane")` scaled to 50m × 30m, or use a cube with `scale=(50, 30, 0.01)`.
-- **Shelf rack**: Create as a rigid body with colliders. Simple box geometry (2m wide × 0.5m deep × 2m tall per slot, 3 slots = 6m wide). Position at a known coordinate (e.g., `x=5, y=10, z=0`).
-- **Loading dock**: Floor-level marker at `x=5, y=2, z=0`. Use a visual prim (no physics needed — just a waypoint).
-- **Forklift**:
-  - Articulated body with chassis, 4 wheel joints (revolute, axis=Y for forward wheels), 1 fork prismatic joint (axis=Z, range 0–1.5m)
-  - `isaacsim.robot.surface_gripper` on fork tips — set `grip_threshold=0.02`, `force_limit=1000.0`
-  - Differential drive: apply velocity to left/right wheel pairs from `cmd_vel` Twist messages
-- **Box (pick item)**: Rigid body, 0.4m cube, mass=5kg, placed on shelf slot 0 at height matching fork level
-
-**ROS 2 Bridge setup** (in the script, using Isaac Sim's OmniGraph or extension API):
-
-```python
-# Key bridge components to configure:
-# 1. Clock publisher: /clock (publishes sim time)
-# 2. Twist subscriber: /forklift_0/cmd_vel → differential drive
-# 3. Float64 subscriber: /forklift_0/fork_cmd → prismatic joint target
-# 4. Odometry publisher: /forklift_0/odom (from chassis position/orientation)
-# 5. JointState publisher: /forklift_0/joint_states (fork position feedback)
-```
-
-**PhysX settings**:
-
-```python
-# In the USD scene or via script:
-physics_scene = UsdPhysics.Scene.Get(stage, "/physicsScene")
-# Solver: TGS (Temporal Gauss-Seidel) — better for articulations
-# Position iterations: 8
-# Velocity iterations: 4
-# Timestep: 1/60s (0.01667)
-# Gravity: (0, 0, -9.81) for Z-up
-```
-
-**Launch headless**:
-
-```bash
-cd ~/warehouse-sim
-docker run --rm --gpus all --network host \
-  -e ACCEPT_EULA=Y \
-  -e ROS_DOMAIN_ID=42 \
-  -v $(pwd)/sim-scripts:/sim-scripts \
-  -v isaac-sim-cache:/isaac-sim/kit/cache \
-  nvcr.io/nvidia/isaac-sim:5.1.0 \
-  ./python.sh /sim-scripts/warehouse_scene.py --headless
-```
-
-**⚠ GOTCHA**: The `--headless` flag disables the GUI. For debugging, use livestream instead:
-
-```bash
-# With livestream (view from browser at http://<brev-ip>:49100)
-docker run --rm --gpus all --network host \
-  -e ACCEPT_EULA=Y \
-  -e ROS_DOMAIN_ID=42 \
-  -v $(pwd)/sim-scripts:/sim-scripts \
-  -v isaac-sim-cache:/isaac-sim/kit/cache \
-  nvcr.io/nvidia/isaac-sim:5.1.0 \
-  ./python.sh /sim-scripts/warehouse_scene.py --livestream
-```
-
-**⚠ GOTCHA**: Isaac Sim's `python.sh` uses its own embedded Python, NOT the system Python. All imports must be available in Isaac Sim's environment. `rclpy` is available because Isaac Sim 5.x ships with ROS 2 Humble support.
-
-### 1.5: Vehicle Controller Node
-
-Create `vehicle-controller/forklift_controller_node.py`:
-
-**Key implementation details**:
-
-```python
-import rclpy
-from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from geometry_msgs.msg import Twist, Point, Pose
-from nav_msgs.msg import Odometry
-from std_msgs.msg import Float64
-# After building warehouse_msgs:
-from warehouse_msgs.msg import TaskAssignment, TaskStatus, ForkliftStatus
-import math
-import enum
-
-class ForkliftState(enum.IntEnum):
-    IDLE = 0
-    NAVIGATING_TO_SHELF = 1
-    PICKING = 2
-    NAVIGATING_TO_DOCK = 3
-    DROPPING = 4
-    ERROR = 5
-    RECOVERING = 6
-```
-
-**State machine critical details**:
-
-- **Proportional control** (Phase 1 only, replaced by Nav2 in Phase 3):
-  - Linear velocity: `v = Kp_lin * distance_to_goal` clamped to `[0, 0.5]` m/s
-  - Angular velocity: `w = Kp_ang * angle_error` clamped to `[-1.0, 1.0]` rad/s
-  - Goal reached threshold: distance < 0.3m
-  - **⚠ GOTCHA**: Publish `cmd_vel` at a fixed rate (10 Hz timer), NOT in the odom callback. Odom callback rate depends on sim performance and can cause jerky motion.
-
-- **Pick sequence** (timed, not sensor-based in Phase 1):
-  1. Publish `fork_cmd = 0.0` (lower fork to ground level) — wait 2s
-  2. Drive forward 0.3m (into shelf) — wait 2s
-  3. Publish `fork_cmd = 0.8` (raise fork with item) — wait 2s
-  4. Verify: item should be on forks (no sensor check in Phase 1 — trust the physics)
-
-- **Drop sequence**: reverse of pick
-  1. Publish `fork_cmd = 0.0` (lower fork) — wait 2s
-  2. Drive backward 0.3m — wait 2s
-  3. Publish `fork_cmd = 0.5` (raise fork to travel height) — wait 1s
-
-**QoS profiles**:
-
-```python
-# For task assignments — must not lose messages
-RELIABLE_QOS = QoSProfile(
-    reliability=ReliabilityPolicy.RELIABLE,
-    durability=DurabilityPolicy.TRANSIENT_LOCAL,
-    depth=10
-)
-
-# For cmd_vel, odom — latest value matters, not history
-BEST_EFFORT_QOS = QoSProfile(
-    reliability=ReliabilityPolicy.BEST_EFFORT,
-    depth=1
-)
-```
-
-**⚠ GOTCHA**: The `TRANSIENT_LOCAL` durability on task assignment means late-joining subscribers get the last published message. This is intentional — if the controller restarts, it picks up the last task. But it also means you must explicitly clear/overwrite old tasks on reset.
-
-**Parameter**: `use_sim_time=true` — set via `--ros-args` on the command line or in the launch file `parameters=` list:
-
-```python
-# In launch file:
-Node(
-    ...
-    parameters=[{'use_sim_time': True}],
-)
-
-# Or on command line:
-# ros2 run vehicle_controller forklift_controller_node --ros-args -p use_sim_time:=true
-```
-
-**⚠ GOTCHA**: Do NOT call `self.declare_parameter('use_sim_time', True)` in the node constructor. The `use_sim_time` parameter is automatically declared by `rclpy.Node.__init__()`. Declaring it again raises `ParameterAlreadyDeclaredException`. Only declare your own custom parameters (e.g., `forklift_id`).
-
-### 1.6: Warehouse Manager (Phase 1 — Simple Script)
-
-Create `warehouse-manager/main_phase1.py`:
-
-```python
-"""Phase 1: Hardcoded single order. No FastAPI yet."""
-import rclpy
-from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from warehouse_msgs.msg import TaskAssignment, TaskStatus, ForkliftStatus
-from geometry_msgs.msg import Point
-import uuid
-
-class WarehouseManagerNode(Node):
-    def __init__(self):
-        super().__init__('warehouse_manager')
-        # NOTE: Do NOT declare or override 'use_sim_time' here.
-        # It is auto-declared by rclpy.Node.__init__().
-        # Pass it via --ros-args -p use_sim_time:=true on the command line.
-        # ... publisher for /warehouse/task_assignment (RELIABLE/TRANSIENT_LOCAL)
-        # ... subscriber for /warehouse/task_status
-        # ... subscriber for /forklift_0/status
-        # On startup timer (once, after 3s delay):
-        #   Publish TaskAssignment:
-        #     task_id = str(uuid.uuid4())
-        #     order_id = "order_001"
-        #     forklift_id = "forklift_0"
-        #     task_type = TaskAssignment.PICK
-        #     source = Point(x=5.0, y=10.0, z=0.0)   # shelf_0 position
-        #     destination = Point(x=5.0, y=2.0, z=0.0) # dock_0 position
-        #     priority = 1
-```
-
-**⚠ GOTCHA**: Use a 3-second startup delay timer before publishing the first task. Isaac Sim and the vehicle controller need time to initialize. If you publish immediately, the message may arrive before subscribers are ready (even with `TRANSIENT_LOCAL`, the publisher needs to be alive when the subscriber joins).
-
-### 1.7: Phase 1 Run & Validation
-
-Run all three components **on Brev** (no Docker Compose yet — just terminals):
-
-```bash
-# Terminal 1: Isaac Sim
-cd ~/warehouse-sim
-docker run --rm --gpus all --network host \
-  -e ACCEPT_EULA=Y \
-  -e ROS_DOMAIN_ID=42 \
-  -v $(pwd)/sim-scripts:/sim-scripts \
-  -v isaac-sim-cache:/isaac-sim/kit/cache \
-  nvcr.io/nvidia/isaac-sim:5.1.0 \
-  ./python.sh /sim-scripts/warehouse_scene.py --headless
-
-# Terminal 2: Vehicle Controller
-cd ~/warehouse-sim/ros2_ws
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-export ROS_DOMAIN_ID=42
-ros2 run vehicle_controller forklift_controller_node --ros-args -p use_sim_time:=true
-# OR if not a ROS 2 package yet, just run:
-python3 ../vehicle-controller/forklift_controller_node.py --ros-args -p use_sim_time:=true
-
-# Terminal 3: Warehouse Manager
-cd ~/warehouse-sim/ros2_ws
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-export ROS_DOMAIN_ID=42
-python3 ../warehouse-manager/main_phase1.py --ros-args -p use_sim_time:=true
-
-# Terminal 4: Monitoring
-export ROS_DOMAIN_ID=42
-ros2 topic echo /warehouse/task_status
-ros2 topic echo /forklift_0/status
-ros2 topic echo /clock
-```
-
-**Validation checklist**:
-
-| Check              | Command                                             | Expected                                  |
-| ------------------ | --------------------------------------------------- | ----------------------------------------- |
-| Clock topic exists | `ros2 topic list \| grep clock`                     | `/clock`                                  |
-| Clock is ticking   | `ros2 topic hz /clock`                              | ~60 Hz                                    |
-| Task assigned      | `ros2 topic echo /warehouse/task_assignment --once` | TaskAssignment message                    |
-| Forklift moves     | `ros2 topic echo /forklift_0/odom`                  | Changing position                         |
-| Task completes     | `ros2 topic echo /warehouse/task_status`            | Status goes PENDING→IN_PROGRESS→COMPLETED |
-| No PhysX errors    | Isaac Sim logs                                      | No "PhysX error" or "NaN" warnings        |
-
-**⚠ GOTCHA**: If the forklift doesn't move, check:
-
-1. `cmd_vel` topic is being published: `ros2 topic hz /forklift_0/cmd_vel`
-2. The Isaac Sim Twist subscriber is connected to the right joint drives
-3. The differential drive gains are set (Isaac Sim OmniGraph differential drive controller needs `wheel_radius` and `wheel_distance` parameters)
-
 ---
 
-## 2. Phase 2 — Warehouse Manager as Service (Still on Brev)
+## 4. Docker Compose — `brev-compose.yml`
 
-### 2.1: Refactor to FastAPI + ROS 2
-
-Create `warehouse-manager/main.py` replacing `main_phase1.py`:
-
-**Critical architecture**: FastAPI runs in the main asyncio event loop. `rclpy` runs in a dedicated background thread with its own executor.
-
-```python
-import asyncio
-import threading
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket
-import rclpy
-from rclpy.executors import MultiThreadedExecutor
-
-# Bridge pattern:
-# ROS 2 callbacks put events into an asyncio.Queue
-# FastAPI WebSocket handler reads from the queue
-# REST endpoints call thread-safe methods on the ROS node
-
-ros_node = None
-event_queue = asyncio.Queue()
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global ros_node
-    rclpy.init()
-    ros_node = WarehouseManagerNode(event_queue)
-    executor = MultiThreadedExecutor()
-    executor.add_node(ros_node)
-    ros_thread = threading.Thread(target=executor.spin, daemon=True)
-    ros_thread.start()
-    yield
-    ros_node.destroy_node()
-    if rclpy.ok():
-        rclpy.shutdown()
-
-app = FastAPI(lifespan=lifespan)
-```
-
-**⚠ GOTCHA**: Thread safety. The ROS 2 executor runs callbacks in its thread. FastAPI runs in the asyncio thread. Shared state (orders dict, forklift states) must use `threading.Lock` or be passed through thread-safe queues. Do NOT access ROS 2 publishers directly from FastAPI handlers — use a queue or `call_soon_threadsafe`.
-
-**⚠ GOTCHA**: `rclpy.init()` must be called ONCE. If it's called twice (e.g., module reloaded by uvicorn), it crashes. Guard with `if not rclpy.ok(): rclpy.init()`.
-
-**⚠ GOTCHA**: `rclpy.shutdown()` must be guarded with `if rclpy.ok():` in the lifespan teardown. If the process is killed (e.g., by `timeout`, Docker stop, or Ctrl+C), rclpy may already be shut down. Calling `rclpy.shutdown()` a second time raises `RCLError: rcl_shutdown already called`.
-
-### 2.2: SQLite Persistence
-
-Create `warehouse-manager/models.py`:
-
-```sql
--- Schema
-CREATE TABLE IF NOT EXISTS orders (
-    id TEXT PRIMARY KEY,
-    items TEXT NOT NULL,           -- JSON array of item SKUs
-    priority INTEGER DEFAULT 1,
-    status TEXT DEFAULT 'pending', -- pending, in_progress, completed, cancelled
-    created_at TEXT DEFAULT (datetime('now')),
-    completed_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS tasks (
-    id TEXT PRIMARY KEY,
-    order_id TEXT REFERENCES orders(id),
-    forklift_id TEXT,
-    task_type INTEGER,            -- 0=PICK, 1=DELIVER
-    source_x REAL, source_y REAL, source_z REAL,
-    dest_x REAL, dest_y REAL, dest_z REAL,
-    status TEXT DEFAULT 'pending',
-    created_at TEXT DEFAULT (datetime('now')),
-    completed_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS task_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id TEXT REFERENCES tasks(id),
-    event_type TEXT NOT NULL,      -- assigned, started, completed, failed, reassigned
-    details TEXT,                  -- JSON payload
-    timestamp TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS metrics_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    orders_completed INTEGER,
-    avg_fulfillment_secs REAL,
-    fleet_utilization REAL,
-    collision_count INTEGER,
-    snapshot_at TEXT DEFAULT (datetime('now'))
-);
-```
-
-**⚠ GOTCHA**: Enable WAL mode immediately after opening:
-
-```python
-import sqlite3
-conn = sqlite3.connect('warehouse.db', check_same_thread=False)
-conn.execute("PRAGMA journal_mode=WAL")
-conn.execute("PRAGMA busy_timeout=5000")
-```
-
-`check_same_thread=False` is required because FastAPI and ROS 2 threads both access the DB. WAL mode allows concurrent reads with one writer. `busy_timeout` prevents immediate SQLITE_BUSY errors.
-
-### 2.3: Redis Setup
+This is the primary compose file. Start everything with:
 
 ```bash
-# On Brev (Phase 1-3, Redis runs locally)
-docker run -d --name redis --network host redis:7-alpine
-redis-cli ping  # PONG
+make brev-up
+# OR
+docker compose -f brev-compose.yml up --build -d
 ```
 
-Redis usage:
+### 4.1: Service Details
 
-```python
-import os, redis
+#### discovery-server
 
-redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
-r = redis.Redis.from_url(redis_url, decode_responses=True)
-
-# Forklift positions (hot state, updated at 10Hz)
-r.hset("forklift:forklift_0", mapping={"x": "5.0", "y": "10.0", "yaw": "1.57", "state": "1"})
-
-# Task queue (priority queue)
-r.zadd("task_queue", {"task_abc": priority_score})
-
-# Pub/sub for WebSocket fan-out — 5 message types:
-# forklift_update — real-time forklift position/state (10Hz)
-# order_update    — order lifecycle changes
-# task_status     — task state transitions
-# metric_update   — periodic KPI snapshots
-# collision       — collision events from contact sensors
-r.publish("ws:events", json.dumps({"type": "forklift_update", "data": {...}}))
-r.publish("ws:events", json.dumps({"type": "task_status", "data": {...}}))
+```yaml
+image: ros:jazzy
+network_mode: host
+command: >
+  bash -c "
+    source /opt/ros/jazzy/setup.bash &&
+    fast-discovery-server -i 0 -p 11811
+  "
+healthcheck:
+  test: ["CMD-SHELL", "grep -q 2E23 /proc/net/udp"]
 ```
 
-**Quaternion → Yaw conversion** (needed when bridging ROS Pose to WebSocket/REST):
+**GOTCHA**: The binary is `fast-discovery-server`, NOT `fastdds discovery` (which is a subcommand that may not exist in all distributions). The healthcheck looks for port 11811 (hex `2E23`) in `/proc/net/udp`.
 
-```python
-import math
-def quaternion_to_yaw(q):
-    """Convert geometry_msgs/Quaternion to yaw angle in radians."""
-    return math.atan2(2.0 * (q.w * q.z + q.x * q.y),
-                      1.0 - 2.0 * (q.y**2 + q.z**2))
+#### isaac-sim-init (one-shot)
+
+Fixes permissions on named Docker volumes. Isaac Sim runs as UID 1234, but named volumes start as root.
+
+```yaml
+image: nvcr.io/nvidia/isaac-sim:5.1.0
+user: "0:0"
+command: chown -R 1234:1234 /isaac-sim/.nvidia-omniverse/logs ...
 ```
 
-### 2.4: Order Generation Engine
+#### isaac-sim
 
-Create `warehouse-manager/order_generator.py`:
-
-- Poisson process: `next_arrival = -math.log(1 - random.random()) / lambda_rate`
-- Runs as an asyncio background task in FastAPI (not in the ROS thread)
-- Picks random shelf with available inventory
-- Creates order in SQLite → dispatches to task dispatcher
-
-### 2.5: Task Dispatcher
-
-Create `warehouse-manager/dispatcher.py`:
-
-- `assign_task(order)`: find idle forklift closest to shelf → publish TaskAssignment
-- `enqueue_order(order)`: add to Redis sorted set if no idle forklift
-- `on_forklift_idle(forklift_id)`: pop from queue, assign
-- Distance calculation: Euclidean on 2D positions from Redis `forklift:{id}` hash
-
-### 2.6: Reset Service
-
-- ROS 2 service server `/warehouse/reset` in the warehouse manager node
-- REST `POST /reset` handler calls the ROS 2 service internally
-- Reset sequence:
-  1. Cancel all in-flight tasks (SQLite: `UPDATE tasks SET status='cancelled'`)
-  2. Flush Redis keys: `forklift:*`, `task_queue`
-  3. Publish TaskAssignment with `task_type=RESET` (or use a dedicated topic `/warehouse/reset_cmd`)
-  4. Wait for all forklifts to report IDLE status (timeout 30s)
-  5. Isaac Sim: reset script triggered by a ROS 2 subscriber in the sim script
-
-### 2.7: Phase 2 Validation
-
-```bash
-# Start all services on Brev
-# Terminal 1: Isaac Sim (same as Phase 1)
-# Terminal 2: Redis
-docker run -d --name redis --network host redis:7-alpine
-# Terminal 3: Warehouse Manager
-cd ~/warehouse-sim
-source ros2_ws/install/setup.bash
-export ROS_DOMAIN_ID=42
-uvicorn warehouse-manager.main:app --host 0.0.0.0 --port 8000
-# Terminal 4: Vehicle Controller (same as Phase 1)
+```yaml
+image: nvcr.io/nvidia/isaac-sim:5.1.0
+network_mode: host
+command: --exec "/sim-scripts/warehouse_scene_streaming.py"
 ```
 
-Validation:
+**Key volumes**:
+- `./fastdds_no_shm.xml:/fastdds_no_shm.xml:ro` — DDS config
+- `./sim-scripts:/sim-scripts` — Python scripts
+- `./simulations/forklift-warehouse/01_scenes:/sim-scripts/scenes` — USD scene files
+- `./simulations/forklift-warehouse/02_core_scripts:/sim-scripts/core_scripts:ro` — Helper scripts
+- `isaac-sim-cache`, `isaac-sim-logs`, `isaac-sim-data`, `isaac-sim-config` — persistent volumes
 
-```bash
-# Create order via API
-curl -X POST http://localhost:8000/orders \
-  -H "Content-Type: application/json" \
-  -d '{"items": ["box_001"], "priority": 1}'
+**CRITICAL**: The entrypoint is the streaming container's built-in `isaac-sim.streaming.sh`. It IGNORES `./python.sh` arguments. The `command:` field passes `--exec "/path/to/script.py"` as a Kit CLI flag that runs the script inside the running Kit app event loop. The script must NOT create a `SimulationApp` — it must use `async def` + `asyncio.ensure_future()`.
 
-# Check order status
-curl http://localhost:8000/orders
+**Environment**:
+- `ISAACSIM_HOST` / `ISAACSIM_SIGNAL_PORT` / `ISAACSIM_STREAM_PORT` — WebRTC streaming config (defaults: 127.0.0.1, 49100, 47998)
+- `SCENE_USD=/sim-scripts/scenes/scene_assembly.usd` — path to USD scene inside container
 
-# Check forklift statuses
-curl http://localhost:8000/forklifts
+**Healthcheck**: Waits for `/tmp/isaac-sim-ready` sentinel file (written by `warehouse_scene_streaming.py` after scene setup). `start_period: 300s` allows 5 min for first-time shader compilation.
 
-# Check metrics
-curl http://localhost:8000/metrics
+#### web-viewer
 
-# Test WebSocket (install websocat)
-websocat ws://localhost:8000/ws/live
+WebRTC browser client on port 8210. Connects to Isaac Sim's streaming ports.
 
-# Test persistence: kill uvicorn, restart, check orders still exist
-curl http://localhost:8000/orders  # Should show previous orders
-
-# Test reset
-curl -X POST http://localhost:8000/reset
+```yaml
+build: context: ./web-viewer
+network_mode: host
+command: ["npx", "vite", "preview", "--host", "--port", "${WEB_VIEWER_PORT:-8210}"]
 ```
 
----
+Access at `http://<brev-ip>:8210` to view the live simulation.
 
-## 3. Phase 3 — Multi-Forklift + Nav2 (Still on Brev)
+#### vehicle-controller
 
-### 3.1: Expand Isaac Sim Scene
-
-Update `sim-scripts/warehouse_scene.py`:
-
-- **4 forklifts**: Duplicate the forklift USD prim. Each forklift gets a unique prim path (`/World/forklift_0`, `/World/forklift_1`, etc.) and unique spawn position.
-- **Spawn positions** (avoid overlap):
-  ```
-  forklift_0: (2, 2, 0)
-  forklift_1: (4, 2, 0)
-  forklift_2: (6, 2, 0)
-  forklift_3: (8, 2, 0)
-  ```
-- **20 shelves**: 4 rows × 5 racks. Grid layout:
-  ```
-  Row 0: shelves at y=8,  x = 5, 10, 15, 20, 25
-  Row 1: shelves at y=14, x = 5, 10, 15, 20, 25
-  Row 2: shelves at y=20, x = 5, 10, 15, 20, 25
-  Row 3: shelves at y=26, x = 5, 10, 15, 20, 25
-  ```
-- **2 docks**: At `(12, 1, 0)` and `(22, 1, 0)`
-- **Aisles**: 3m wide between rows (enough for forklift to pass)
-- **ROS 2 bridge per forklift**: Each forklift gets namespaced topics:
-  - `/forklift_{n}/cmd_vel`, `/forklift_{n}/odom`, `/forklift_{n}/fork_cmd`, `/forklift_{n}/lidar`
-- **Contact sensors**: Add `PhysicsContactSensor` to each forklift chassis. Publish on `/forklift_{n}/contact`
-
-**⚠ GOTCHA**: When duplicating forklift USD prims, ensure each prim's articulation root and joint names are unique. Isaac Sim may share references if you just copy/paste in the USD stage. Use `Sdf.Path` operations to make deep copies.
-
-### 3.2: Occupancy Map Generation
-
-Create `sim-scripts/occupancy_map_gen.py`:
-
-```python
-# Uses isaacsim.asset.gen.omap extension
-# 1. Load the warehouse scene
-# 2. Call OccupancyMapGenerator with parameters:
-#    - cell_size: 0.1m (10cm resolution)
-#    - height_range: (0.1, 2.0) — captures shelves but not ceiling
-#    - origin: (0, 0) — bottom-left of warehouse
-# 3. Publish on /map as nav_msgs/OccupancyGrid with:
-#    - QoS: RELIABLE + TRANSIENT_LOCAL (latched — Nav2 gets it whenever it subscribes)
-#    - frame_id: "map"
-#    - resolution: 0.1
-# 4. Also save as .pgm/.yaml for Nav2 map_server fallback
+```yaml
+build:
+  context: .
+  dockerfile: vehicle-controller/Dockerfile
+network_mode: host
+command: >
+  bash -c "
+    source /opt/ros/jazzy/setup.bash &&
+    source /ros2_ws/install/setup.bash &&
+    ros2 launch vehicle_controller multi_forklift.launch.py
+  "
+environment:
+  - NUM_FORKLIFTS=1     # Currently single forklift; set to 4 for multi
 ```
 
-**⚠ GOTCHA**: The occupancy map must match the physical scene exactly. If shelves are moved after map generation, Nav2 will plan through shelves. Regenerate on layout changes.
+**Dockerfile** (`vehicle-controller/Dockerfile`):
 
-### 3.3: Vehicle Controller with Nav2
+```dockerfile
+FROM ros:jazzy
 
-Update `vehicle-controller/` to a proper ROS 2 package:
+RUN apt-get update && apt-get install -y \
+    ros-jazzy-navigation2 \
+    ros-jazzy-nav2-bringup \
+    ros-jazzy-rmw-fastrtps-cpp \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
 
+WORKDIR /ros2_ws/src
+COPY warehouse_msgs/ warehouse_msgs/
+COPY vehicle-controller/ vehicle_controller/
+
+WORKDIR /ros2_ws
+RUN /bin/bash -c "source /opt/ros/jazzy/setup.bash && \
+    colcon build --symlink-install && \
+    echo 'source /ros2_ws/install/setup.bash' >> /etc/bash.bashrc"
+
+RUN pip3 install --no-cache-dir --break-system-packages redis
 ```
-vehicle-controller/
-├── package.xml
-├── setup.py                   # ament_python build type
-├── setup.cfg                  # REQUIRED — see gotcha below
-├── resource/
-│   └── vehicle_controller     # empty marker file for ament index
-├── vehicle_controller/
-│   ├── __init__.py
-│   ├── forklift_controller_node.py
-│   ├── zone_reservation.py
-│   ├── config/
-│   │   └── nav2_params.yaml
-│   └── launch/
-│       └── multi_forklift.launch.py
-└── Dockerfile
-```
 
-**⚠ GOTCHA**: For `ament_python` packages, you MUST create a `setup.cfg` with script installation directories, otherwise `ros2 run` won't find the entry point:
+**GOTCHA**: `ros:jazzy` uses Python 3.12 — `pip install` requires `--break-system-packages` flag.
+
+**GOTCHA**: `setup.cfg` MUST have `[develop]` and `[install]` sections pointing to `$base/lib/vehicle_controller`, otherwise `ros2 run` can't find the entry point:
 
 ```ini
 [develop]
@@ -825,499 +420,415 @@ script_dir=$base/lib/vehicle_controller
 install_scripts=$base/lib/vehicle_controller
 ```
 
-Without this, setuptools installs the entry point script to `$base/bin/` instead of `$base/lib/vehicle_controller/`, and `ros2 run` can't find it.
-
-You also need a `resource/vehicle_controller` empty marker file for the ament index.
-
-**Nav2 parameters** (`config/nav2_params.yaml`) — critical tuning for warehouse:
+#### warehouse-manager
 
 ```yaml
-# MUST OVERRIDE DEFAULTS — Nav2 defaults are for outdoor/large robots
-planner_server:
-  ros__parameters:
-    planner_plugins: ["GridBased"]
-    GridBased:
-      plugin: "nav2_navfn_planner/NavfnPlanner"
-      tolerance: 0.3 # Goal tolerance in meters
-      use_astar: true # A* faster than Dijkstra for point-to-point
-      allow_unknown: false
-
-controller_server:
-  ros__parameters:
-    controller_plugins: ["FollowPath"]
-    FollowPath:
-      plugin: "dwb_core::DWBLocalPlanner"
-      max_vel_x: 0.5 # Warehouse forklift speed
-      min_vel_x: 0.0
-      max_vel_theta: 1.0
-      min_speed_theta: 0.0
-      acc_lim_x: 0.5
-      acc_lim_theta: 1.0
-      decel_lim_x: -0.5
-      xy_goal_tolerance: 0.25
-      yaw_goal_tolerance: 0.15
-      transform_tolerance: 0.5
-
-local_costmap:
-  local_costmap:
-    ros__parameters:
-      update_frequency: 5.0
-      publish_frequency: 2.0
-      width: 5 # 5m local window
-      height: 5
-      resolution: 0.05 # 5cm for local obstacle avoidance
-      robot_radius: 0.8 # Forklift footprint radius
-      plugins: ["obstacle_layer", "inflation_layer"]
-      inflation_layer:
-        inflation_radius: 1.0 # Keep 1m from obstacles
-        cost_scaling_factor: 3.0 # Aggressive falloff
-
-global_costmap:
-  global_costmap:
-    ros__parameters:
-      update_frequency: 1.0
-      robot_radius: 0.8
-      plugins: ["static_layer", "inflation_layer"]
-      static_layer:
-        map_subscribe_transient_local: true # Get the latched /map
-      inflation_layer:
-        inflation_radius: 0.8 # Narrower for global planning (fit in aisles)
-        cost_scaling_factor: 5.0
+build:
+  context: .
+  dockerfile: warehouse-manager/Dockerfile
+network_mode: host
+command: >
+  bash -c "
+    source /opt/ros/jazzy/setup.bash &&
+    source /ros2_ws/install/setup.bash &&
+    uvicorn main:app --host 0.0.0.0 --port 8000
+  "
 ```
 
-**⚠ GOTCHA**: If `inflation_radius` in global costmap is too large, Nav2 will consider aisles as blocked and fail to find paths. 0.8m works for 3m-wide aisles with 0.8m robot radius. Test by visualizing costmap in RViz.
-
-**Launch file** (`launch/multi_forklift.launch.py`):
-
-```python
-import os
-from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction
-from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node, PushRosNamespace
-
-def generate_launch_description():
-    num_forklifts = int(os.environ.get('NUM_FORKLIFTS', '4'))
-
-    ld = LaunchDescription()
-
-    # Shared map server (no namespace)
-    ld.add_action(Node(
-        package='nav2_map_server',
-        executable='map_server',
-        name='map_server',
-        parameters=[{'yaml_filename': '', 'topic_name': '/map',
-                      'use_sim_time': True}],
-    ))
-
-    for i in range(num_forklifts):
-        ns = f'forklift_{i}'
-        group = GroupAction([
-            PushRosNamespace(ns),
-            # Nav2 planner
-            Node(package='nav2_planner', executable='planner_server',
-                 name='planner_server',
-                 parameters=['config/nav2_params.yaml', {'use_sim_time': True}]),
-            # Nav2 controller
-            Node(package='nav2_controller', executable='controller_server',
-                 name='controller_server',
-                 parameters=['config/nav2_params.yaml', {'use_sim_time': True}]),
-            # Nav2 BT navigator
-            Node(package='nav2_bt_navigator', executable='bt_navigator',
-                 name='bt_navigator',
-                 parameters=[{'use_sim_time': True}]),
-            # Lifecycle manager for this namespace
-            Node(package='nav2_lifecycle_manager',
-                 executable='lifecycle_manager',
-                 name='lifecycle_manager',
-                 parameters=[{
-                     'autostart': True,
-                     'use_sim_time': True,
-                     'node_names': ['planner_server', 'controller_server', 'bt_navigator']
-                 }]),
-            # Forklift controller (our custom node)
-            Node(package='vehicle_controller',
-                 executable='forklift_controller_node',
-                 name='controller',
-                 parameters=[{'forklift_id': ns, 'use_sim_time': True}]),
-        ])
-        ld.add_action(group)
-
-    return ld
-```
-
-**⚠ GOTCHA**: Nav2 lifecycle management is critical. All Nav2 nodes start in an unconfigured state. The `lifecycle_manager` must activate them in order. If any node fails to activate, check logs for missing transforms (tf). The forklift controller must publish `odom` → `base_link` transform.
-
-### 3.4: Zone Reservation
-
-Create `vehicle-controller/vehicle_controller/zone_reservation.py`:
-
-```python
-# Zone-based reservation system
-# Warehouse divided into rectangular zones:
-#   - Each aisle segment = 1 zone
-#   - Each intersection = 1 zone
-# Protocol:
-#   1. Forklift publishes ZoneRequest on /zone_requests (forklift_id, zone_id, priority)
-#   2. ZoneManager node (singleton) grants/denies via /zone_grants
-#   3. Forklift waits for grant before entering zone
-#   4. On exit, forklift publishes ZoneRelease
-# Priority: forklift with cargo > empty forklift > lower task priority
-# Deadlock: if wait > 5s, ZoneManager forces lower-priority forklift to back out
-```
-
-**⚠ GOTCHA**: This is the most complex part of Phase 3. Start with a simple version:
-
-1. Phase 3.4 MVP: global mutex per aisle (only 1 forklift per aisle at a time)
-2. Refine later: zone-level granularity
-
-### 3.5: Error Recovery
-
-Add to `forklift_controller_node.py`:
-
-```python
-# RECOVERING state transitions:
-# 1. Contact sensor triggers (/forklift_n/contact has data):
-#    - Immediately publish cmd_vel = (0, 0) — STOP
-#    - Transition to RECOVERING
-#    - Publish cmd_vel = (-0.2, 0) for 2s — back up
-#    - Clear local costmap (call /forklift_n/local_costmap/clear_entirely_local_costmap service)
-#    - Re-send NavigateToPose goal — resume task
-#    - If NavigateToPose fails 3 times → ERROR
-#
-# 2. NavigateToPose action returns ABORTED:
-#    - Retry 1: same goal, clear costmap first
-#    - Retry 2: goal with 0.5m offset (try adjacent approach)
-#    - Retry 3: report ERROR
-#
-# 3. ERROR state:
-#    - Publish TaskStatus(status=FAILED)
-#    - Stay in ERROR until new TaskAssignment or reset
-#    - Warehouse Manager will reassign the task after 10s timeout
-```
-
-### 3.6: Phase 3 Validation
-
-```bash
-# Run with 4 forklifts
-export NUM_FORKLIFTS=4
-export ROS_DOMAIN_ID=42
-
-# Terminal 1: Isaac Sim (updated scene with 4 forklifts)
-# Terminal 2: Redis
-# Terminal 3: Warehouse Manager (update config for 4 forklifts, 2 orders/min)
-# Terminal 4: Vehicle Controller (launch file starts all 4)
-ros2 launch vehicle_controller multi_forklift.launch.py
-
-# Monitor for 10 minutes
-ros2 topic echo /warehouse/task_status  # Watch for COMPLETED and FAILED
-ros2 topic echo /forklift_0/contact     # Watch for collisions
-
-# Count completed vs failed
-# Expected: most orders complete, failed orders get reassigned
-```
-
-Validation:
-
-| Check                  | How                                      | Expected                       |
-| ---------------------- | ---------------------------------------- | ------------------------------ |
-| All forklifts navigate | `ros2 topic hz /forklift_{0..3}/cmd_vel` | All ~10 Hz                     |
-| No permanent deadlocks | Watch task_status for 10 min             | No task stuck >60s             |
-| Collision recovery     | Manually push a forklift in Isaac Sim    | Backs up, replans              |
-| Task reassignment      | Kill forklift_0's controller node        | Its task reassigned to another |
-| Occupancy map          | `ros2 topic echo /map --once \| head`    | Valid OccupancyGrid            |
-
----
-
-## 4. Phase 4 — Split Deployment (Brev Side)
-
-From this phase, Brev runs **only** sim + vehicle controller. Warehouse manager moves to local machine.
-
-### 4.1: FastDDS Discovery Server
-
-Create `fastdds_discovery.xml`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8" ?>
-<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
-    <profiles>
-        <participant profile_name="discovery_server" is_default_profile="true">
-            <rtps>
-                <builtin>
-                    <discovery_config>
-                        <discoveryProtocol>SERVER</discoveryProtocol>
-                        <discoveryServersList>
-                            <RemoteServer prefix="44.53.00.5f.45.50.52.4f.53.49.4d.41">
-                                <metatrafficUnicastLocatorList>
-                                    <locator>
-                                        <udpv4>
-                                            <address>0.0.0.0</address>
-                                            <port>11811</port>
-                                        </udpv4>
-                                    </locator>
-                                </metatrafficUnicastLocatorList>
-                            </RemoteServer>
-                        </discoveryServersList>
-                    </discovery_config>
-                </builtin>
-            </rtps>
-        </participant>
-    </profiles>
-</dds>
-```
-
-### 4.2: Brev Docker Compose
-
-Create `brev-compose.yml`:
-
-```yaml
-services:
-  # --- FastDDS Discovery Server ---
-  discovery-server:
-    image: ros:humble
-    network_mode: host
-    command: >
-      bash -c "
-        source /opt/ros/humble/setup.bash &&
-        fast-discovery-server -i 0 -p 11811
-      "
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "ss -uln | grep -q 11811"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  # --- Isaac Sim ---
-  isaac-sim:
-    image: nvcr.io/nvidia/isaac-sim:5.1.0
-    network_mode: host
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    environment:
-      - ACCEPT_EULA=Y
-      - ROS_DOMAIN_ID=42
-      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-      - ROS_DISCOVERY_SERVER=localhost:11811
-      - SCENE_USD=/sim-scripts/scenes/scene_assembly.usd
-      # NOTE: Do NOT set FASTRTPS_DEFAULT_PROFILES_FILE here.
-      # ROS_DISCOVERY_SERVER env var auto-configures this container as a
-      # DDS super-client. Loading the server XML would conflict with the
-      # dedicated discovery-server container.
-    volumes:
-      - ./sim-scripts:/sim-scripts:ro
-      - ./simulations/forklift-warehouse/01_scenes:/sim-scripts/scenes:ro
-      - isaac-sim-cache:/isaac-sim/kit/cache
-    command: ./python.sh /sim-scripts/warehouse_scene.py --headless
-    depends_on:
-      discovery-server:
-        condition: service_healthy
-    restart: unless-stopped
-
-  # --- Vehicle Controller (single container, all forklifts) ---
-  vehicle-controller:
-    build:
-      context: .
-      dockerfile: vehicle-controller/Dockerfile
-    network_mode: host
-    environment:
-      - ROS_DOMAIN_ID=42
-      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-      - ROS_DISCOVERY_SERVER=localhost:11811
-      # NOTE: Same as isaac-sim — do NOT load the server XML profile.
-      # ROS_DISCOVERY_SERVER is sufficient for client discovery.
-      - NUM_FORKLIFTS=4
-    command: >
-      bash -c "
-        source /opt/ros/humble/setup.bash &&
-        source /ros2_ws/install/setup.bash &&
-        ros2 launch vehicle_controller multi_forklift.launch.py
-      "
-    depends_on:
-      discovery-server:
-        condition: service_healthy
-    restart: unless-stopped
-
-volumes:
-  isaac-sim-cache:
-```
-
-**⚠ GOTCHA**: The discovery server command is `fast-discovery-server -i 0 -p 11811`, NOT `fastdds discovery --server-id 0 --port 11811`. The `fastdds` CLI subcommand doesn't work in the `ros:humble` Docker image — it reports `fast-discovery-server tool not found!` and the `--port` argument is unrecognized. The standalone binary `fast-discovery-server` (at `/opt/ros/humble/bin/fast-discovery-server`) works correctly.
-
-**⚠ GOTCHA**: Use `depends_on` with `condition: service_healthy` (not just `depends_on:`) and add a `healthcheck` on the discovery server. Without this, Isaac Sim and the vehicle controller may start before the discovery server is ready, causing DDS discovery failures.
-
-**⚠ GOTCHA**: The scene USD file lives in `simulations/forklift-warehouse/01_scenes/scene_assembly.usd`. Mount it into the Isaac Sim container via `./simulations/forklift-warehouse/01_scenes:/sim-scripts/scenes:ro` and set `SCENE_USD=/sim-scripts/scenes/scene_assembly.usd` in the environment.
-
-### 4.3: Vehicle Controller Dockerfile
-
-Create `vehicle-controller/Dockerfile`:
+**Dockerfile** (`warehouse-manager/Dockerfile`):
 
 ```dockerfile
-FROM ros:humble
+FROM ros:jazzy
 
-# Install Nav2
 RUN apt-get update && apt-get install -y \
-    ros-humble-navigation2 \
-    ros-humble-nav2-bringup \
-    ros-humble-rmw-fastrtps-cpp \
     python3-pip \
+    ros-jazzy-rmw-fastrtps-cpp \
     && rm -rf /var/lib/apt/lists/*
 
-# Build warehouse_msgs
+COPY warehouse-manager/requirements.txt /tmp/requirements.txt
+RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements.txt
+
 WORKDIR /ros2_ws/src
 COPY warehouse_msgs/ warehouse_msgs/
-COPY vehicle-controller/ vehicle_controller/
 
 WORKDIR /ros2_ws
-RUN /bin/bash -c "source /opt/ros/humble/setup.bash && \
-    colcon build --symlink-install && \
+RUN /bin/bash -c "source /opt/ros/jazzy/setup.bash && \
+    colcon build --packages-select warehouse_msgs && \
     echo 'source /ros2_ws/install/setup.bash' >> /etc/bash.bashrc"
 
-# Install Python dependencies
-RUN pip3 install --no-cache-dir redis
-
-WORKDIR /ros2_ws
+COPY warehouse-manager/ /app/
+WORKDIR /app
+EXPOSE 8000
 ```
 
-**⚠ GOTCHA**: The `colcon build` step will fail if `vehicle-controller/` is not a valid ROS 2 package (needs `package.xml` and either `CMakeLists.txt` or `setup.py`). For a Python-only package, use `setup.py` with `ament_python`.
-
-**⚠ GOTCHA**: The `package.xml` must declare `<build_type>ament_python</build_type>` inside `<export>` for Python packages. And the `setup.cfg` file is mandatory — see the vehicle controller section above for the required `[develop]` and `[install]` sections.
-
-### 4.4: Tailscale Verification
-
-```bash
-# On Brev
-tailscale status
-# Should show both Brev and local machine connected
-
-# Test connectivity
-ping <local-tailscale-ip>
-
-# Verify discovery server is reachable from local
-# (run from local machine)
-nc -zv <brev-tailscale-ip> 11811
+**NOTE**: The Dockerfile's CMD still references `ros:humble` — this is harmless because the compose `command:` overrides it. Fix it if rebuilding without compose:
+```dockerfile
+# WRONG (in Dockerfile CMD):
+CMD ["bash", "-c", "source /opt/ros/humble/setup.bash && ..."]
+# CORRECT:
+CMD ["bash", "-c", "source /opt/ros/jazzy/setup.bash && ..."]
 ```
 
-### 4.5: Phase 4 Run
+**`requirements.txt`**:
+```
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+aiosqlite>=0.19.0
+redis>=5.0.0
+pyyaml>=6.0
+websockets>=12.0
+scipy>=1.11.0
+```
+
+#### redis
+
+```yaml
+image: redis:7-alpine
+network_mode: host
+```
+
+No port mapping needed since all containers use host networking.
+
+### 4.2: Named Volumes
+
+```yaml
+volumes:
+  isaac-sim-cache:    # Shader cache (~5 GB after first run)
+  isaac-sim-logs:     # Omniverse logs
+  isaac-sim-data:     # Omniverse data
+  isaac-sim-config:   # Omniverse config
+```
+
+---
+
+## 5. Isaac Sim Streaming Script
+
+### 5.1: `warehouse_scene_streaming.py` — How It Works
+
+This is the heart of the simulation. It runs as a Kit `--exec` script inside the Isaac Sim streaming container.
+
+**Startup sequence**:
+1. Writes `fastdds_no_shm.xml` to `/tmp/` if not mounted (fallback)
+2. Sets `FASTRTPS_DEFAULT_PROFILES_FILE` env var
+3. Opens `SCENE_USD` (default: `/sim-scripts/scenes/scene_assembly.usd`)
+4. Waits 120 frames for stage to settle
+5. Enables `omni.isaac.vscode` extension (port 8226 for VS Code remote)
+6. Configures PhysX: TGS solver, GPU dynamics, 60 Hz, Z-up gravity
+7. Sets up joint DriveAPI (stiffness/damping) on all forklift drive/steer joints
+8. Creates OmniGraph per forklift with ROS 2 bridge nodes
+9. Creates a pick box at (5, 10, 0.6)
+10. Starts timeline (plays simulation)
+11. Starts `cmd_vel_bridge_loop` — reads twist_sub OG outputs → sets ArticulationController targets each frame
+12. Writes `/tmp/isaac-sim-ready` sentinel for Docker healthcheck
+
+### 5.2: OmniGraph Per Forklift
+
+Each forklift gets an OmniGraph at `/World/ROS2BridgeGraph_{fid}` with these nodes:
+
+| Index | Node | Type | Purpose |
+|---|---|---|---|
+| 0 | on_playback_tick | `omni.graph.action.OnPlaybackTick` | Tick source |
+| 1 | clock_pub | `isaacsim.ros2.bridge.ROS2PublishClock` | Publishes `/clock` |
+| 2 | twist_sub | `isaacsim.ros2.bridge.ROS2SubscribeTwist` | Subscribes `/{fid}/cmd_vel` |
+| 3 | compute_odom | `isaacsim.core.nodes.IsaacComputeOdometry` | Computes odometry from chassis |
+| 4 | odom_pub | `isaacsim.ros2.bridge.ROS2PublishOdometry` | Publishes `/{fid}/odom` |
+| 5 | read_sim_time | `isaacsim.core.nodes.IsaacReadSimulationTime` | Simulation time source |
+| 6 | drive_controller | `isaacsim.core.nodes.IsaacArticulationController` | Velocity control on `back_wheel_drive` |
+| 7 | steer_controller | `isaacsim.core.nodes.IsaacArticulationController` | Position control on `back_wheel_swivel` |
+
+**CRITICAL**: Isaac Sim 5.1.0 renamed all node types:
+- `omni.isaac.ros2_bridge.*` → `isaacsim.ros2.bridge.*`
+- `omni.isaac.core_nodes.*` → `isaacsim.core.nodes.*`
+- `omni.isaac.wheeled_robots.*` → `isaacsim.robot.wheeled_robots.*`
+
+### 5.3: cmd_vel Bridge Loop
+
+The bridge runs every frame and converts ROS 2 Twist → ArticulationController targets:
+
+```
+linear_x  = twist.linear.x    # m/s forward
+angular_z = twist.angular.z   # rad/s rotation
+
+drive_vel = linear_x * DRIVE_SCALE    # DRIVE_SCALE = -1.0/WHEEL_RADIUS ≈ -6.667
+steer_rad = angular_z * STEER_SCALE   # STEER_SCALE = radians(20) ≈ 0.349
+steer_rad = clamp(steer_rad, -STEER_MAX, +STEER_MAX)  # STEER_MAX = radians(30)
+```
+
+**Why negative DRIVE_SCALE**: In this USD asset, negative angular velocity on `back_wheel_drive` means forks-forward motion.
+
+### 5.4: Joint Physics Parameters
+
+Set before simulation starts via `UsdPhysics.DriveAPI.Apply()`:
+
+| Joint | Stiffness | Damping | Control Mode |
+|---|---|---|---|
+| `back_wheel_drive` | 0 | 15,000 | Pure velocity |
+| `back_wheel_swivel` | 40,000 | 10,000 | Position (spring) |
+
+**GOTCHA**: Must use `DriveAPI.Apply()` (not just constructor) to ensure the drive schema exists on joint prims.
+
+### 5.5: Scene Prim Paths
+
+```
+/World/warehouse                              — Environment
+/World/forklift_b                             — Template (deactivated)
+/World/forklift_0 .. /World/forklift_3        — Active forklifts (cloned from forklift_b)
+  /{id}/body                                  — Rigid body (articulation root)
+  /{id}/back_wheel_joints/back_wheel_drive    — Rear drive joint
+  /{id}/back_wheel_joints/back_wheel_swivel   — Rear steer joint
+/World/Rack_A .. /World/Rack_D                — Shelf racks (box collision prims)
+/World/Dock_1, /World/Dock_2                  — Loading docks
+```
+
+Spawn positions: `forklift_0 (-15,-25)`, `forklift_1 (-5,-25)`, `forklift_2 (5,-25)`, `forklift_3 (15,-25)`
+
+Warehouse bounds: X ≈ -36..+33, Y ≈ -36..+52
+
+---
+
+## 6. Vehicle Controller
+
+### 6.1: State Machine
+
+```
+IDLE → NAVIGATING_TO_SHELF → PICKING → NAVIGATING_TO_DOCK → DROPPING → IDLE
+                                                                  ↓
+                                                               ERROR → RECOVERING → (retry)
+```
+
+### 6.2: `forklift_controller_node.py`
+
+**Subscribes**:
+- `/{forklift_id}/odom` (`nav_msgs/Odometry`) — BEST_EFFORT QoS
+- `/warehouse/task_assignment` (`warehouse_msgs/TaskAssignment`) — RELIABLE/TRANSIENT_LOCAL
+
+**Publishes**:
+- `/{forklift_id}/cmd_vel` (`geometry_msgs/Twist`) — at 10 Hz timer
+- `/{forklift_id}/fork_cmd` (`std_msgs/Float64`)
+- `/warehouse/task_status` (`warehouse_msgs/TaskStatus`)
+- `/{forklift_id}/status` (`warehouse_msgs/ForkliftStatus`)
+
+**Phase 1 proportional controller**:
+```
+KP_LINEAR  = 0.5      # m/s per metre error
+KP_ANGULAR = 2.0      # rad/s per radian error
+MAX_LINEAR_VEL  = 0.5  # m/s
+MAX_ANGULAR_VEL = 1.0  # rad/s
+GOAL_REACHED_DIST = 0.3  # metres
+```
+
+**GOTCHA**: Do NOT call `self.declare_parameter('use_sim_time', True)` — it's auto-declared by `rclpy.Node.__init__()`. Pass via `--ros-args -p use_sim_time:=true` or `parameter_overrides=`.
+
+**GOTCHA**: Publish `cmd_vel` at a fixed rate (10 Hz timer), NOT in the odom callback. Odom callback rate depends on sim performance and can cause jerky motion.
+
+### 6.3: Launch File
+
+`vehicle_controller/launch/multi_forklift.launch.py`:
+- Reads `NUM_FORKLIFTS` env var (default 4)
+- Creates one `PushRosNamespace(forklift_{i})` group per forklift
+- Each group runs one `forklift_controller_node` with `parameters=[{'forklift_id': ns, 'use_sim_time': True}]`
+
+---
+
+## 7. Warehouse Manager
+
+### 7.1: FastAPI + ROS 2 Hybrid Architecture
+
+- FastAPI runs in the main asyncio event loop (uvicorn)
+- ROS 2 node runs in a background thread via `MultiThreadedExecutor`
+- `use_sim_time` set via `parameter_overrides` in `WarehouseManagerNode.__init__()` (NOT via CLI `--ros-args`, so uvicorn launches normally)
+- Shared state bridged through in-memory dicts with thread safety
+- Redis for hot state (forklift positions at 10 Hz) and pub/sub for WebSocket fan-out
+
+### 7.2: Key Files
+
+| File | Purpose |
+|---|---|
+| `main.py` | FastAPI app + `WarehouseManagerNode` ROS 2 bridge |
+| `models.py` | SQLite schema + helpers (aiosqlite, WAL mode) |
+| `dispatcher.py` | Task assignment: `nearest_assign()` (greedy) + `batch_assign()` (Hungarian/scipy) |
+| `scenario.py` | Record/replay order sequences |
+| `requirements.txt` | Python deps: fastapi, uvicorn, aiosqlite, redis, scipy, etc. |
+
+### 7.3: SQLite Schema
+
+Tables: `orders`, `tasks`, `metrics_log`
+
+```python
+# WAL mode + busy_timeout for concurrent FastAPI + ROS thread access
+await db.execute("PRAGMA journal_mode=WAL")
+await db.execute("PRAGMA busy_timeout=5000")
+```
+
+### 7.4: `WarehouseManagerNode`
+
+```python
+class WarehouseManagerNode(Node):
+    def __init__(self):
+        super().__init__(
+            "warehouse_manager",
+            parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)],
+        )
+```
+
+**Subscribes**: `/{fid}/status` for all 4 forklifts, `/warehouse/task_status`
+**Publishes**: `/warehouse/task_assignment`
+**Dispatch strategies**: `DISPATCH_STRATEGY` env var — `"nearest"` (default) or `"batched"`
+
+### 7.5: API Endpoints (Phase 2)
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/forklifts` | All forklift states (from in-memory dict) |
+| `GET` | `/orders` | All orders (from SQLite) |
+| `POST` | `/orders` | Create new order `{"items": [...], "priority": N}` |
+| `GET` | `/metrics` | KPI snapshots |
+| `POST` | `/reset` | Cancel all tasks, reset forklifts |
+| `WS` | `/ws/live` | Real-time events (forklift_update, order_update, task_status, etc.) |
+| `GET` | `/docs` | Swagger UI |
+
+---
+
+## 8. Running the System
+
+### 8.1: Quick Start (Makefile)
 
 ```bash
-cd ~/warehouse-sim
-git pull  # Get latest code
-docker compose -f brev-compose.yml up --build -d
+cd /home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot
 
-# Verify containers are running
+# Start everything and wait for Isaac Sim to be ready
+make brev-up
+
+# Monitor logs
+make brev-logs
+
+# Isaac Sim logs only
+make brev-logs-sim
+
+# Check status
+make brev-status
+
+# Restart just Isaac Sim
+make brev-restart-sim
+
+# Stop everything
+make brev-down
+
+# Stop + remove volumes (clean slate)
+make brev-clean
+```
+
+### 8.2: Manual Startup (run_phase1.sh)
+
+```bash
+./run_phase1.sh
+```
+
+This starts services sequentially: discovery-server → redis → isaac-sim → vehicle-controller → warehouse-manager.
+
+### 8.3: Verification
+
+```bash
+# Check all containers are running
 docker compose -f brev-compose.yml ps
 
-# Check logs
-docker compose -f brev-compose.yml logs -f isaac-sim
-docker compose -f brev-compose.yml logs -f vehicle-controller
+# Expected:
+# discovery-server     Up (healthy)
+# isaac-sim            Up (healthy)     ← takes 2-5 min first time
+# redis                Up (healthy)
+# vehicle-controller   Up
+# warehouse-manager    Up
+# web-viewer           Up (healthy)
 
-# Verify ROS 2 topics are published
-export ROS_DOMAIN_ID=42
-export ROS_DISCOVERY_SERVER=localhost:11811
-ros2 topic list
+# Test ROS 2 topics (from inside vehicle-controller container)
+docker exec nvidia-digital-twin-pilot-vehicle-controller-1 \
+  bash -c "source /opt/ros/jazzy/setup.bash && \
+           source /ros2_ws/install/setup.bash && \
+           ros2 topic list"
+# Expected topics:
+#   /clock
+#   /forklift_0/cmd_vel
+#   /forklift_0/odom
+#   /forklift_0/status
+#   /warehouse/task_assignment
+#   /warehouse/task_status
+
+# Test API
+curl http://localhost:8000/docs          # Swagger UI
+curl http://localhost:8000/forklifts     # Forklift states
+curl http://localhost:8000/orders        # Order list
+
+# Test WebRTC viewer
+# Open http://<brev-ip>:8210 in browser
+
+# Test forklift movement via helper script
+docker cp simulations/forklift-warehouse/04_helper_scripts/ros2_test_maneuver.py \
+  nvidia-digital-twin-pilot-vehicle-controller-1:/tmp/ros2_test_maneuver.py
+docker exec nvidia-digital-twin-pilot-vehicle-controller-1 \
+  bash -c "source /opt/ros/jazzy/setup.bash && python3 /tmp/ros2_test_maneuver.py"
 ```
+
+### 8.4: Validation Checklist
+
+| Check | Command | Expected |
+|---|---|---|
+| Clock topic exists | `ros2 topic list \| grep clock` | `/clock` |
+| Clock is ticking | `ros2 topic hz /clock` | ~60 Hz |
+| Odom publishing | `ros2 topic hz /forklift_0/odom` | ~60 Hz |
+| cmd_vel works | Send test twist, watch odom | Position changes |
+| API responds | `curl localhost:8000/forklifts` | JSON with forklift states |
+| WebRTC works | Open `:8210` in browser | See warehouse scene |
 
 ---
 
-## 5. Phase 6 — Optimization (Brev Side)
+## 9. Key Gotchas & Lessons Learned
 
-### 5.1: Fleet Routing (runs on local warehouse-manager, but affects Brev)
-
-No Brev-side changes for fleet routing optimization — the warehouse manager handles dispatching.
-
-### 5.2: Domain Randomization
-
-Update `sim-scripts/warehouse_scene.py` to accept randomization parameters:
-
-```bash
-# Launch with randomization
-docker run ... nvcr.io/nvidia/isaac-sim:5.1.0 \
-  ./python.sh /sim-scripts/warehouse_scene.py --headless \
-  --randomize-items --randomize-layout --seed 42
-```
-
-### 5.3: Layout A/B Testing
-
-Create `sim-scripts/layout_generator.py`:
-
-- Reads layout config (aisle width, shelf spacing, dock count)
-- Generates USD scene procedurally
-- Publishes matching occupancy map
+1. **`fast-discovery-server` binary**, not `fastdds discovery` subcommand — the latter may not exist
+2. **Isaac Sim 5.1.0 uses Jazzy** — all sidecars must use `ros:jazzy` (not humble)
+3. **`ros:jazzy` = Python 3.12** — pip needs `--break-system-packages`
+4. **Isaac Sim ignores `./python.sh` in streaming mode** — use `--exec "/script.py"` Kit CLI flag
+5. **`--exec` scripts must be async** — use `asyncio.ensure_future()`, NOT `SimulationApp()`
+6. **OmniGraph node types renamed** in 5.1.0: `omni.isaac.*` → `isaacsim.*`
+7. **ArticulationController** is the correct way to drive joints (not DriveAPI attribute setting at runtime — that doesn't propagate to PhysX with GPU dynamics)
+8. **`targetPrim` format**: Must use `[usdrt.Sdf.Path("/World/forklift_0")]` (list of Sdf.Path)
+9. **SHM must be disabled** — Docker containers have isolated IPC namespaces
+10. **`rclpy.shutdown()` guard**: Always use `if rclpy.ok():` before shutdown to avoid double-shutdown errors
+11. **`use_sim_time` auto-declared** by rclpy — don't declare it again or you get `ParameterAlreadyDeclaredException`
+12. **`setup.cfg` required** for ament_python — must have `[develop]` and `[install]` sections
+13. **FastDDS SHM disabled via XML**, not environment variable — the `fastdds_no_shm.xml` file is mounted into every container and also generated as fallback inside `warehouse_scene_streaming.py`
+14. **Isaac Sim container UID**: Runs as UID 1234 — named volumes need `isaac-sim-init` one-shot to fix permissions
+15. **DRIVE_SCALE is negative** (-6.667 rad/s per m/s) because negative angular velocity on `back_wheel_drive` means forks-forward in this USD asset
 
 ---
 
-## Troubleshooting
+## 10. Phase 4 — Split Deployment (Brev Side)
 
-### Isaac Sim won't start
+> Not yet active. When ready, switch from `brev-compose.yml` to `brev-compose-phase4.yml`.
+
+**IMPORTANT**: The existing `brev-compose-phase4.yml` is **outdated** — it still references `ros:humble` and `./python.sh`. Before using it, update to match the current `brev-compose.yml`:
+- `ros:humble` → `ros:jazzy` for discovery-server and vehicle-controller
+- Source `/opt/ros/jazzy/setup.bash` instead of humble
+- Isaac Sim command to use `--exec` instead of `./python.sh`
+- Add `fastdds_no_shm.xml` volume mount and env vars to all services
+- Add `isaac-sim-init` service for volume permissions
+- Add `web-viewer` service
+- Add `PRIVACY_CONSENT=Y` env var to isaac-sim
+- Copy volume mount pattern from current `brev-compose.yml`
+
+The local machine will run warehouse-manager + Redis + dashboard, connecting to Brev via Tailscale. See `LOCAL-IMPLEMENTATION.md` for the local side.
+
+### 10.1: Install Tailscale (needed from Phase 4)
 
 ```bash
-# Check GPU
-nvidia-smi  # Must show GPU with enough free VRAM
-
-# Check Docker GPU access
-docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
-
-# Check Isaac Sim logs
-docker compose -f brev-compose.yml logs isaac-sim | grep -i error
-
-# Common: EULA not accepted
-# Fix: ensure ACCEPT_EULA=Y in environment
-
-# Common: shader compilation OOM
-# Fix: close other GPU processes, or use A10G with 24GB VRAM
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+# Sign in with the SAME Tailscale account used on your local machine
+tailscale ip -4
+# Note the IP — local machine will need this
 ```
 
-### ROS 2 topics not visible
+Save the Brev Tailscale IP in your project `.env` file:
 
 ```bash
-# Check discovery server is running
-docker compose -f brev-compose.yml logs discovery-server
-
-# Check ROS_DOMAIN_ID matches
-echo $ROS_DOMAIN_ID  # Must be 42
-
-# Check ROS_DISCOVERY_SERVER
-echo $ROS_DISCOVERY_SERVER  # Must be localhost:11811 on Brev
-
-# List participants
-ros2 daemon stop && ros2 daemon start
-ros2 topic list
-```
-
-### Nav2 nodes fail to activate
-
-```bash
-# Check lifecycle status
-ros2 lifecycle list /forklift_0/planner_server
-
-# Common: missing /map topic
-# Fix: ensure occupancy map is published before Nav2 starts
-
-# Common: missing odom → base_link transform
-# Fix: ensure Isaac Sim publishes tf or the controller node publishes it
-
-# Common: planner fails to find path
-# Fix: check costmap inflation radius — too large blocks aisles
-```
-
-### Forklift doesn't pick up item
-
-```bash
-# Check fork position
-ros2 topic echo /forklift_0/joint_states
-
-# Common: surface gripper threshold too tight
-# Fix: increase grip_threshold to 0.05
-
-# Common: fork doesn't align with item height
-# Fix: adjust fork target position to match shelf slot height
-
-# Common: item mass too high for gripper force
-# Fix: increase force_limit on surface_gripper
+echo "BREV_TAILSCALE_IP=$(tailscale ip -4)" >> .env
 ```
