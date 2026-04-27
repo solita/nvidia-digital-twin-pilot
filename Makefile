@@ -4,7 +4,15 @@
 COMPOSE := docker compose -f local-compose.yml
 
 help: ## Show available commands
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36mmake %-18s\033[0m %s\n", $$1, $$2}'
+	@echo '  make up                 Start core services (redis + warehouse-manager)'
+	@echo '  make down               Stop all services'
+	@echo '  make dashboard          Start dashboard (http://localhost:3000)'
+	@echo '  make dashboard-dev      Start dashboard in Vite dev mode (http://localhost:5173)'
+	@echo '  make logs               Tail logs for core services'
+	@echo '  make logs-dashboard     Tail dashboard logs'
+	@echo '  make status             Show running containers'
+	@echo '  make restart            Restart all running services'
+	@echo '  make clean              Stop everything and remove volumes'
 
 up: ## Start core services (redis + warehouse-manager)
 	@source .env && export BREV_TAILSCALE_IP && \
@@ -16,7 +24,7 @@ down: ## Stop all services
 
 dashboard: ## Start dashboard (http://localhost:3000)
 	$(COMPOSE) --profile dashboard up --build -d dashboard
-	@echo "\n  Dashboard running at: http://localhost:3000\n"
+	@echo '\n  Dashboard running at: http://localhost:3000\n'
 
 dashboard-dev: ## Start dashboard in Vite dev mode (http://localhost:5173)
 	cd dashboard && npm install && npm run dev
