@@ -107,11 +107,16 @@ STUCK_MIN_MOVE      = 0.10  # m — minimum displacement to reset stuck counter
 
 # ── Output file paths (inside Isaac Sim container) ────────────────────────────
 
-DIAG_LOG = (
+_OUT = (
     "/isaac-sim/.local/share/ov/data/nvidia-digital-twin-pilot/"
-    "simulations/forklift-warehouse/04_current_outputs/forklift_diag.txt"
+    "simulations/forklift-warehouse/04_current_outputs"
 )
-STATE_JSON = (
-    "/isaac-sim/.local/share/ov/data/nvidia-digital-twin-pilot/"
-    "simulations/forklift-warehouse/04_current_outputs/forklift_state.json"
-)
+DIAG_LOG   = f"{_OUT}/forklift_diag.txt"
+STATE_JSON = f"{_OUT}/forklift_state.json"
+
+# ── HTTP control server ────────────────────────────────────────────────────────
+# aiohttp server started by forklift_controller.py.  Dashboard POSTs to this.
+# Container uses --network=host so localhost:CMD_SERVER_PORT is directly
+# reachable from the host without any docker port mapping changes.
+
+CMD_SERVER_PORT = 8081
