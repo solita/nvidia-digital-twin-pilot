@@ -20,9 +20,10 @@ import json
 import os
 import signal
 import subprocess
+import urllib.request
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 PORT = 8080
 
@@ -48,6 +49,9 @@ STATE_FILE = (
     "/home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot/"
     "simulations/forklift-warehouse/04_current_outputs/forklift_state.json"
 )
+
+# Controller HTTP server (aiohttp, running inside Isaac Sim on --network=host)
+CONTROLLER_CMD_URL = "http://localhost:8081/cmd"
 
 _EMPTY_STATE: dict = {
     "frame": 0,
@@ -129,7 +133,15 @@ _HTML = r"""<!DOCTYPE html>
   .badge.STOP  { background:#3a1010; color:var(--red); }
   .progress-bar { height:8px; background:var(--border); border-radius:4px; overflow:hidden; margin-top:6px; }
   .progress-bar .fill { height:100%; background:var(--blue); border-radius:4px; transition:width .3s; }
-  .footnote { font-size:0.72rem; color:var(--muted); margin-top:8px; }
+  .btn-bar { display:flex; gap:10px; }
+  .btn {
+    flex:1; padding:10px 0; border:none; border-radius:8px;
+    font-size:0.85rem; font-weight:700; cursor:pointer; letter-spacing:.03em;
+    transition: opacity .15s;
+  }
+  .btn:active { opacity:.7; }
+  .btn-pause  { background:#f5c842; color:#000; }
+  .btn-resume { background:#4caf7d; color:#000; }
   .legend { display:flex; flex-wrap:wrap; gap:10px; }
   .legend-item { display:flex; align-items:center; gap:5px; font-size:0.72rem; color:var(--muted); }
   .legend-swatch { width:14px; height:10px; border-radius:2px; }
@@ -192,6 +204,12 @@ _HTML = r"""<!DOCTYPE html>
       <div class="metric-grid">
         <div><div class="lbl">Fwd Min</div><div class="val" id="vFwd">--</div></div>
         <div><div class="lbl">Repulsion</div><div class="val" id="vRep">--</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Controls</div>
+      <div class="btn-bar">
+        <button class="btn btn-pause" id="btnPause" onclick="sendCmd('pause')">⏸ Pause</button>
       </div>
     </div>
     <div class="card">
@@ -595,6 +613,37 @@ function updateSidebar(data) {
   document.getElementById("speedBar").style.width = sp + "%";
 }
 
+// ── Control buttons ─────────────────────────────────────────────────
+
+let _simPaused = false;
+
+function sendCmd(cmd) {
+  // Toggle: if already paused, send resume instead
+  if (cmd === 'pause' && _simPaused) cmd = 'resume';
+  fetch('/api/cmd/' + cmd, { method: 'POST' })
+    .then(r => r.text())
+    .then(() => {
+      // Optimistic update — flip button immediately, don't wait for state poll
+      if (cmd === 'pause')  updateButtons(true);
+      if (cmd === 'resume') updateButtons(false);
+    })
+    .catch(() => {
+      document.getElementById('cmdStatus').textContent = 'Command failed — is the sim running?';
+    });
+}
+
+function updateButtons(paused) {
+  _simPaused = paused;
+  const btn = document.getElementById('btnPause');
+  if (paused) {
+    btn.textContent = '▶ Resume';
+    btn.className   = 'btn btn-resume';
+  } else {
+    btn.textContent = '⏸ Pause';
+    btn.className   = 'btn btn-pause';
+  }
+}
+
 // ── Main loop ────────────────────────────────────────────────────────
 
 let lastFrame = -1, staleCount = 0;
@@ -612,6 +661,7 @@ function handleData(data) {
   drawScene();
   drawDynamic(data);
   updateSidebar(data);
+  updateButtons(data.paused || false);
   if (data.frame !== lastFrame) { staleCount = 0; lastFrame = data.frame; } else staleCount++;
   const tag = document.getElementById("liveTag");
   if (staleCount > 4) { tag.textContent="STALE"; tag.className="pill stale"; }
@@ -678,6 +728,32 @@ def index():
 @app.get("/api/state", response_class=JSONResponse)
 def get_state():
     return JSONResponse(_read_state())
+
+
+def _post_controller_cmd(action: str, value=None) -> str:
+    """POST an action to the controller's aiohttp server (best-effort)."""
+    body = json.dumps({"action": action, "value": value}).encode()
+    req  = urllib.request.Request(
+        CONTROLLER_CMD_URL,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            return resp.read().decode()
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@app.post("/api/cmd/pause", response_class=PlainTextResponse)
+def cmd_pause():
+    return _post_controller_cmd("pause")
+
+
+@app.post("/api/cmd/resume", response_class=PlainTextResponse)
+def cmd_resume():
+    return _post_controller_cmd("resume")
 
 
 @app.websocket("/ws")

@@ -69,6 +69,59 @@ http://<host>:8080
 
 ---
 
+## Forklift Control Architecture
+
+The controller exposes a lightweight HTTP server (stdlib `HTTPServer`, daemon
+thread) that runs **inside Isaac Sim** on port `8081`.  The dashboard acts as a
+thin proxy — browser clicks POST to the dashboard, which forwards them to the
+controller.
+
+```
+Browser
+  │
+  │  POST http://<host>:8080/api/cmd/pause
+  │  POST http://<host>:8080/api/cmd/resume
+  ▼
+dashboard.py  (FastAPI, port 8080)
+  │
+  │  POST http://localhost:8081/cmd  {"action": "pause"|"resume"}
+  ▼
+forklift_controller.py — stdlib HTTPServer thread (port 8081)
+  │
+  │  puts {"action": ..., "value": ...} into queue.SimpleQueue
+  ▼
+run_forklift() asyncio loop — drains queue every simulation frame
+  │
+  ├─ "pause"  → stops drive/steer joints, sets paused=True in live state
+  └─ "resume" → resumes normal nav loop, sets paused=False in live state
+```
+
+### State feedback loop
+
+`forklift_controller.py` writes `forklift_state.json` every 10 frames
+(and on every frame while paused).  The `"paused"` field in that JSON is
+read by the dashboard's state poll, which calls `updateButtons(paused)` in
+the browser to flip the button between **⏸ Pause** and **▶ Resume**.
+
+### Port binding across re-runs
+
+The controller creates the port-8081 socket once on first run and stores it
+in `sys.modules["__forklift_cmd_sock__"]`.  Every subsequent re-run of the
+script (without restarting Isaac Sim) reuses the same socket — no rebind,
+no "Address already in use" errors.
+
+### Adding new commands
+
+To add a new control action:
+
+1. **Controller** (`forklift_controller.py`) — add an `elif action == "your_action":` branch in the command-drain loop.
+2. **Dashboard backend** (`dashboard.py`) — add a `@app.post("/api/cmd/your_action")` endpoint that calls `_post_controller_cmd("your_action")`.
+3. **Dashboard frontend** (the `<script>` block in `_HTML`) — add a button that calls `sendCmd('your_action')`.
+
+No changes needed to the HTTP server, queue, or port binding.
+
+---
+
 ## Stopping the Dashboard
 
 ```bash
