@@ -1,13 +1,20 @@
 """
 forklift_controller.py — Main loop: wires physics joints, nav, and LIDAR together.
 
-Control API (aiohttp server on port 8081, runs inside Isaac Sim):
-  POST http://<host>:8081/cmd   body: {"action": "pause"|"resume"|"reset"|"speed", "value": 0-1}
+Control API (stdlib HTTPServer, daemon thread, port 8081):
+  POST http://<host>:8081/cmd   body: {"action": "pause"|"resume"|"speed", "value": 0-1}
   GET  http://<host>:8081/status  → live forklift state JSON (same as state file)
 
 Data flow:
-  Browser  →  POST /cmd  →  aiohttp server  →  asyncio.Queue  →  main loop
-  Main loop  →  state dict  →  GET /status  (in-memory, no file read needed)
+  Browser  →  POST /api/cmd/*  →  dashboard.py proxy
+             →  POST http://localhost:8081/cmd  →  HTTPServer thread (port 8081)
+                                                    ↓ queue.SimpleQueue
+                                               run_forklift() asyncio loop reads queue
+
+  Main loop  →  forklift_state.json + _live_state dict (GET /status)
+
+The port-8081 socket is created once and stored in sys.modules so re-running
+this script inside the same Isaac Sim process never triggers "Address already in use".
 
 All tunable values  → fl_config.py
 LIDAR processing    → lidar_processor.py
