@@ -1,18 +1,16 @@
-from __future__ import annotations
-
 """
 forklift_launcher.py — Isaac Sim entry point for the forklift warehouse simulation.
 
 Opens scene_assembly.usd, starts the timeline, then hands off to
 forklift_controller.py which drives the forklift in an infinite patrol loop.
 
-Run via:
-  ./run_sim.sh
-  or: VS Code → Isaac Sim: Run File Remotely
+Run via VS Code: Ctrl+Shift+P → Isaac Sim: Run File Remotely
 """
+from __future__ import annotations
 
 import asyncio
 import runpy
+import sys
 from pathlib import Path
 
 import carb
@@ -20,11 +18,17 @@ import omni.kit.app
 import omni.timeline
 import omni.usd
 
-# ── Configuration ─────────────────────────────────────────────────────────────
+# ── Paths ──────────────────────────────────────────────────────────────────────
+# __file__ is unreliable when run via "Isaac Sim: Run File Remotely" — it
+# resolves to the VS Code extension dir, not this file.  Hardcode the
+# container-side paths directly (host volume is mounted at the prefix below).
 
-_THIS_FILE = Path(__file__).resolve()
-SCRIPT_DIR = _THIS_FILE.parent
-WORKSPACE_DIR = SCRIPT_DIR.parent
+_CONTAINER_ROOT = "/isaac-sim/.local/share/ov/data/nvidia-digital-twin-pilot"
+SCRIPT_DIR    = Path(_CONTAINER_ROOT) / "simulations/forklift-warehouse/02_core_scripts"
+WORKSPACE_DIR = Path(_CONTAINER_ROOT) / "simulations/forklift-warehouse"
+
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 SCENE_FILE  = WORKSPACE_DIR / "01_scenes" / "scene_assembly.usd"
 MAIN_SCRIPT = SCRIPT_DIR   / "forklift_controller.py"
@@ -86,18 +90,12 @@ async def main() -> None:
     await _next_updates(2)
 
     log(f"Running forklift controller: {MAIN_SCRIPT}")
-    runpy.run_path(str(MAIN_SCRIPT), run_name="__main__")
-        err("Timed out waiting for stage to load.")
-        return
-
-    log("Stage loaded — starting timeline.")
-    omni.timeline.get_timeline_interface().play()
-    await _next_updates(2)
-
-    log(f"Running main script: {MAIN_SCRIPT}")
-    # Replace the line below with your actual simulation logic or
-    # use runpy.run_path(str(MAIN_SCRIPT)) to execute an external script.
-    log("TODO: implement simulation logic in this launcher or in MAIN_SCRIPT.")
+    try:
+        runpy.run_path(str(MAIN_SCRIPT), run_name="__main__")
+    except Exception as exc:
+        err(f"Controller failed to load: {exc}")
+        import traceback
+        traceback.print_exc()
 
 
 asyncio.ensure_future(main())
