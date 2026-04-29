@@ -1,7 +1,12 @@
-.PHONY: init check-ports dev dash stop
+.PHONY: init check-ports dev dash stop help
+.DEFAULT_GOAL := help
 
 # Ports required for streaming
 STREAMING_PORTS := 49100 47998 8080
+
+## Show available commands
+help:
+	@awk '/^## /{desc=substr($$0,4)} /^[a-zA-Z_-]+:/{if(desc){gsub(/:/,"",$$1); printf "  \033[36m%-20s\033[0m %s\n", $$1, desc; desc=""}}' $(MAKEFILE_LIST)
 
 ## One-time project initialization — creates dirs, pulls image, installs deps, checks ports
 init:
