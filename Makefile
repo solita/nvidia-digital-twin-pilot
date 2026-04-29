@@ -1,9 +1,11 @@
 .PHONY: init check-ports dev dash dash-restart stop help
 .DEFAULT_GOAL := help
 
-# Use host UID/GID so Docker-created files stay editable on the host
-HOST_UID := $(shell id -u)
-HOST_GID := $(shell id -g)
+# Isaac Sim image runs as isaac-sim (1234:1234); /isaac-sim is drwxr-x---
+# so the container MUST run with this UID to access the application directory.
+# Host volume-mount dirs should be chowned to 1234 (done by `make init`).
+HOST_UID := 1234
+HOST_GID := 1234
 
 # Ports required for streaming
 STREAMING_PORTS := 49100 47998 8080
@@ -23,8 +25,13 @@ init:
 	@mkdir -p ~/docker/isaac-sim/data/Kit
 	@mkdir -p ~/docker/isaac-sim/logs
 	@mkdir -p ~/docker/isaac-sim/pkg
-	@echo "==> Setting ownership to host user (UID=$(HOST_UID))..."
-	@sudo chown -R $(HOST_UID):$(HOST_GID) ~/docker/isaac-sim
+	@echo "==> Setting ownership on Isaac Sim volume-mount dirs (UID=$(HOST_UID))..."
+	@sudo chown -R $(HOST_UID):$(HOST_GID) ~/docker/isaac-sim/cache ~/docker/isaac-sim/logs ~/docker/isaac-sim/config ~/docker/isaac-sim/pkg
+	@sudo chown -R $(HOST_UID):$(HOST_GID) ~/docker/isaac-sim/data/Kit ~/docker/isaac-sim/data/documents
+	@sudo chmod 777 ~/docker/isaac-sim/data
+	@echo "==> Ensuring git repo stays accessible to both ubuntu and container..."
+	@sudo chmod -R o+rwX ~/docker/isaac-sim/data/nvidia-digital-twin-pilot 2>/dev/null || true
+	@git config --global --add safe.directory /home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot 2>/dev/null || true
 	@echo "==> Pulling Isaac Sim Docker image (skip if already present)..."
 	@docker pull nvcr.io/nvidia/isaac-sim:5.1.0
 	@echo "==> Installing Python dependencies..."
