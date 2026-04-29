@@ -118,27 +118,16 @@ _HTML = r"""<!DOCTYPE html>
   }
   .map-wrap {
     background:var(--card); border:1px solid var(--border); border-radius:12px;
-    position:relative; overflow:hidden; width:100%;
+    position:relative; overflow:hidden;
     /* Warehouse aspect ratio: VIEW height 98.7 / VIEW width 69.5 ≈ 1.42 */
     aspect-ratio: 69.5 / 98.7;
-    min-height:min(calc(100vw * 1.42), calc(100vh - 120px));
+    max-height:calc(100vh - 120px);
+    width:auto;
   }
   .map-title { padding:10px 16px; font-size:0.8rem; color:var(--muted); border-bottom:1px solid var(--border); }
   canvas#map { display:block; width:100%; height:calc(100% - 37px); }
-  .map-legend {
-    position:absolute; bottom:16px; left:16px; z-index:10;
-    background:rgba(26,31,46,0.8); border:1px solid var(--border); border-radius:10px;
-    padding:12px 16px; backdrop-filter:blur(6px); pointer-events:none;
-    max-width:320px;
-  }
-  .map-legend .card-title { font-size:0.72rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin-bottom:8px; }
-  .map-location {
-    position:absolute; top:48px; right:16px; z-index:10;
-    background:rgba(26,31,46,0.85); border:1px solid var(--border); border-radius:10px;
-    padding:12px 16px; backdrop-filter:blur(6px);
-    min-width:200px;
-  }
-  .map-location .card-title { font-size:0.72rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin-bottom:8px; }
+
+
   .sidebar {
     display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px;
     overflow-y:auto;
@@ -164,9 +153,7 @@ _HTML = r"""<!DOCTYPE html>
   .btn:disabled { opacity:.4; cursor:not-allowed; filter:grayscale(.6); }
   .btn-pause  { background:#f5c842; color:#000; }
   .btn-resume { background:#4caf7d; color:#000; }
-  .legend { display:flex; flex-wrap:wrap; gap:10px; }
-  .legend-item { display:flex; align-items:center; gap:5px; font-size:0.72rem; color:var(--muted); }
-  .legend-swatch { width:14px; height:10px; border-radius:2px; }
+
 </style>
 </head>
 <body>
@@ -184,26 +171,9 @@ _HTML = r"""<!DOCTYPE html>
   <div class="map-wrap">
     <div class="map-title">scene_assembly.usd — All assets to scale (1 grid = 10 m) &nbsp;|&nbsp; X → east, Y ↑ north</div>
     <canvas id="map"></canvas>
-    <div class="map-legend">
-      <div class="card-title">Scene Legend</div>
-      <div class="legend">
-        <div class="legend-item"><div class="legend-swatch" style="background:#2a3348;border:1px solid #3a4260"></div>Warehouse floor</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#3a4260"></div>Walls</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#5c3d1a"></div>Rack shelving</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#6b7a99"></div>Columns</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#c05050"></div>Obstacle cubes</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#ff8c00"></div>Traffic cones</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#8c5a28"></div>Cardboard boxes</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#5a8c6b"></div>Stack composites</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#f5c842"></div>Forklift body</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#8b9ab0"></div>Fork tines →</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#4a9eff"></div>Waypoints</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#4caf7d55"></div>Trail</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:rgba(76,175,125,0.3)"></div>LIDAR clear</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:rgba(224,85,85,0.4)"></div>LIDAR hit</div>
-      </div>
-    </div>
-    <div class="map-location">
+  </div>
+  <div class="sidebar">
+    <div class="card">
       <div class="card-title">Position &amp; Heading</div>
       <div class="metric-grid">
         <div><div class="lbl">X</div><div class="val" id="vX">--</div></div>
@@ -212,8 +182,6 @@ _HTML = r"""<!DOCTYPE html>
         <div><div class="lbl">Hdg Error</div><div class="val" id="vErr">--</div></div>
       </div>
     </div>
-  </div>
-  <div class="sidebar">
     <div class="card">
       <div class="card-title">Patrol Route</div>
       <div class="metric-grid">
@@ -529,6 +497,52 @@ function drawScene() {
   ctx.fillStyle = "#7a8299"; ctx.font = "11px system-ui";
   ctx.textAlign = "center"; ctx.textBaseline = "bottom";
   ctx.fillText(barM+" m", bx+barPx/2, by-6);
+
+  // ── Scene legend (top-right, matching scale-bar style) ──────────
+  const legendItems = [
+    ["#2a3348","Warehouse floor"],  ["#3a4260","Walls"],
+    ["#5c3d1a","Rack shelving"],    ["#6b7a99","Columns"],
+    ["#c05050","Obstacle cubes"],   ["#ff8c00","Traffic cones"],
+    ["#8c5a28","Cardboard boxes"],  ["#5a8c6b","Stack composites"],
+    ["#f5c842","Forklift body"],    ["#8b9ab0","Fork tines \u2192"],
+    ["#4a9eff","Waypoints"],        ["#4caf7d","Trail"],
+  ];
+  const lgPad = 12, lgSwW = 14, lgSwH = 10, lgGap = 6, lgRowH = 18;
+  const lgFontSize = 11;
+  const lgW = 160, lgH = lgPad * 2 + legendItems.length * lgRowH + 14;
+  const lgX = W - lgW - 16, lgY = 16;
+
+  // Background
+  ctx.fillStyle = "rgba(15,18,25,0.82)";
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(lgX, lgY, lgW, lgH, 8);
+  else ctx.rect(lgX, lgY, lgW, lgH);
+  ctx.fill();
+  ctx.strokeStyle = "#3a4260"; ctx.lineWidth = 1;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(lgX, lgY, lgW, lgH, 8);
+  else ctx.rect(lgX, lgY, lgW, lgH);
+  ctx.stroke();
+
+  // Title
+  ctx.fillStyle = "#7a8299"; ctx.font = "bold 10px system-ui";
+  ctx.textAlign = "left"; ctx.textBaseline = "top";
+  ctx.fillText("LEGEND", lgX + lgPad, lgY + lgPad);
+
+  // Entries
+  ctx.font = lgFontSize + "px system-ui";
+  legendItems.forEach(([color, label], i) => {
+    const ry = lgY + lgPad + 16 + i * lgRowH;
+    // Swatch
+    ctx.fillStyle = color;
+    ctx.fillRect(lgX + lgPad, ry, lgSwW, lgSwH);
+    ctx.strokeStyle = "#555"; ctx.lineWidth = 0.5;
+    ctx.strokeRect(lgX + lgPad, ry, lgSwW, lgSwH);
+    // Label
+    ctx.fillStyle = "#b0b8c8";
+    ctx.textAlign = "left"; ctx.textBaseline = "middle";
+    ctx.fillText(label, lgX + lgPad + lgSwW + lgGap, ry + lgSwH / 2);
+  });
 }
 
 // ── Dynamic overlay ──────────────────────────────────────────────────
