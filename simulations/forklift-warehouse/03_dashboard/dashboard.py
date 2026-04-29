@@ -140,6 +140,7 @@ _HTML = r"""<!DOCTYPE html>
     transition: opacity .15s;
   }
   .btn:active { opacity:.7; }
+  .btn:disabled { opacity:.4; cursor:not-allowed; filter:grayscale(.6); }
   .btn-pause  { background:#f5c842; color:#000; }
   .btn-resume { background:#4caf7d; color:#000; }
   .legend { display:flex; flex-wrap:wrap; gap:10px; }
@@ -212,7 +213,8 @@ _HTML = r"""<!DOCTYPE html>
     <div class="card">
       <div class="card-title">Controls</div>
       <div class="btn-bar">
-        <button class="btn btn-pause" id="btnPause" onclick="sendCmd('pause')">⏸ Pause</button>
+        <button class="btn btn-pause" id="btnPause" onclick="sendCmd('pause')" disabled>⏸ Pause</button>
+        <div id="cmdStatus" style="font-size:0.72rem;color:var(--muted);margin-top:6px"></div>
       </div>
     </div>
     <div class="card">
@@ -676,8 +678,10 @@ function updateSidebar(data) {
 // ── Control buttons ─────────────────────────────────────────────────
 
 let _simPaused = false;
+let _controllerAlive = false;
 
 function sendCmd(cmd) {
+  if (!_controllerAlive) return;
   // Toggle: if already paused, send resume instead
   if (cmd === 'pause' && _simPaused) cmd = 'resume';
   fetch('/api/cmd/' + cmd, { method: 'POST' })
@@ -691,6 +695,26 @@ function sendCmd(cmd) {
       document.getElementById('cmdStatus').textContent = 'Command failed — is the sim running?';
     });
 }
+
+// Poll controller liveness every 3 s and enable/disable button
+function pollControllerAlive() {
+  fetch('/api/controller-alive', { cache:'no-store' })
+    .then(r => r.json())
+    .then(d => {
+      _controllerAlive = d.alive;
+      const btn = document.getElementById('btnPause');
+      const status = document.getElementById('cmdStatus');
+      btn.disabled = !d.alive;
+      status.textContent = d.alive ? '' : 'Controller not running';
+    })
+    .catch(() => {
+      _controllerAlive = false;
+      document.getElementById('btnPause').disabled = true;
+      document.getElementById('cmdStatus').textContent = 'Controller not running';
+    });
+}
+pollControllerAlive();
+setInterval(pollControllerAlive, 3000);
 
 function updateButtons(paused) {
   _simPaused = paused;
@@ -804,6 +828,18 @@ def _post_controller_cmd(action: str, value=None) -> str:
             return resp.read().decode()
     except Exception as exc:
         return f"Error: {exc}"
+
+
+@app.get("/api/controller-alive", response_class=JSONResponse)
+def controller_alive():
+    """Probe the controller HTTP server to see if it's reachable."""
+    try:
+        req = urllib.request.Request("http://localhost:8081/status", method="GET")
+        with urllib.request.urlopen(req, timeout=1):
+            pass
+        return JSONResponse({"alive": True})
+    except Exception:
+        return JSONResponse({"alive": False})
 
 
 @app.post("/api/cmd/pause", response_class=PlainTextResponse)

@@ -1,4 +1,4 @@
-.PHONY: init check-ports dev dash stop help
+.PHONY: init check-ports dev dash dash-restart stop help
 .DEFAULT_GOAL := help
 
 # Ports required for streaming
@@ -29,6 +29,8 @@ init:
 	@docker pull nvcr.io/nvidia/isaac-sim:5.1.0
 	@echo "==> Installing Python dependencies..."
 	@pip install --quiet fastapi uvicorn
+	@echo "==> Installing Isaac Sim VS Code Edition extension..."
+	@code --install-extension nvidia.isaacsim-vscode-edition --force
 	@echo "==> Checking streaming ports..."
 	@$(MAKE) --no-print-directory check-ports
 	@echo "==> Done. Run 'make dev' to start Isaac Sim."
@@ -92,9 +94,18 @@ dev:
 		nvcr.io/nvidia/isaac-sim:5.1.0 \
 		-lc "export LD_LIBRARY_PATH=\$$LD_LIBRARY_PATH:/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib && ./runheadless.sh --/app/livestream/publicEndpointAddress=$$PUBLIC_IP --/app/livestream/port=49100"
 
-## Start the forklift dashboard on port 8080
+## Start the forklift dashboard on port 8080 (auto-reloads on file changes)
 dash:
-	@cd simulations/forklift-warehouse/03_dashboard && python3 -m uvicorn dashboard:app --host 0.0.0.0 --port 8080
+	@cd simulations/forklift-warehouse/03_dashboard && python3 -m uvicorn dashboard:app --host 0.0.0.0 --port 8080 --reload
+
+## Kill running dashboard, clear __pycache__, and restart fresh
+dash-restart:
+	@echo "==> Stopping existing dashboard on port 8080..."
+	@fuser -k 8080/tcp 2>/dev/null || true
+	@echo "==> Clearing Python cache..."
+	@find simulations/forklift-warehouse/03_dashboard -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	@echo "==> Starting dashboard with hot-reload..."
+	@cd simulations/forklift-warehouse/03_dashboard && python3 -m uvicorn dashboard:app --host 0.0.0.0 --port 8080 --reload
 
 ## Stop the Isaac Sim container
 stop:
