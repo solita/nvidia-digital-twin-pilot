@@ -112,16 +112,37 @@ _HTML = r"""<!DOCTYPE html>
   }
   .pill.stale { background:var(--red); }
   .layout {
-    display:grid; grid-template-columns:1fr 300px; gap:16px;
-    padding:16px 24px; height:calc(100vh - 57px);
+    display:grid; grid-template-columns:1fr; gap:16px;
+    padding:16px 24px; min-height:calc(100vh - 57px);
+    grid-template-rows:auto auto;
   }
   .map-wrap {
     background:var(--card); border:1px solid var(--border); border-radius:12px;
-    display:flex; flex-direction:column; overflow:hidden; position:relative;
+    position:relative; overflow:hidden; width:100%;
+    /* Warehouse aspect ratio: VIEW height 98.7 / VIEW width 69.5 ≈ 1.42 */
+    aspect-ratio: 69.5 / 98.7;
+    min-height:min(calc(100vw * 1.42), calc(100vh - 120px));
   }
   .map-title { padding:10px 16px; font-size:0.8rem; color:var(--muted); border-bottom:1px solid var(--border); }
-  canvas#map { flex:1; width:100%; display:block; }
-  .sidebar { display:flex; flex-direction:column; gap:12px; overflow-y:auto; }
+  canvas#map { display:block; width:100%; height:calc(100% - 37px); }
+  .map-legend {
+    position:absolute; bottom:16px; left:16px; z-index:10;
+    background:rgba(26,31,46,0.8); border:1px solid var(--border); border-radius:10px;
+    padding:12px 16px; backdrop-filter:blur(6px); pointer-events:none;
+    max-width:320px;
+  }
+  .map-legend .card-title { font-size:0.72rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin-bottom:8px; }
+  .map-location {
+    position:absolute; top:48px; right:16px; z-index:10;
+    background:rgba(26,31,46,0.85); border:1px solid var(--border); border-radius:10px;
+    padding:12px 16px; backdrop-filter:blur(6px);
+    min-width:200px;
+  }
+  .map-location .card-title { font-size:0.72rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin-bottom:8px; }
+  .sidebar {
+    display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px;
+    overflow-y:auto;
+  }
   .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
   .card-title { font-size:0.72rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin-bottom:10px; }
   .metric-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
@@ -163,9 +184,7 @@ _HTML = r"""<!DOCTYPE html>
   <div class="map-wrap">
     <div class="map-title">scene_assembly.usd — All assets to scale (1 grid = 10 m) &nbsp;|&nbsp; X → east, Y ↑ north</div>
     <canvas id="map"></canvas>
-  </div>
-  <div class="sidebar">
-    <div class="card">
+    <div class="map-legend">
       <div class="card-title">Scene Legend</div>
       <div class="legend">
         <div class="legend-item"><div class="legend-swatch" style="background:#2a3348;border:1px solid #3a4260"></div>Warehouse floor</div>
@@ -184,7 +203,7 @@ _HTML = r"""<!DOCTYPE html>
         <div class="legend-item"><div class="legend-swatch" style="background:rgba(224,85,85,0.4)"></div>LIDAR hit</div>
       </div>
     </div>
-    <div class="card">
+    <div class="map-location">
       <div class="card-title">Position &amp; Heading</div>
       <div class="metric-grid">
         <div><div class="lbl">X</div><div class="val" id="vX">--</div></div>
@@ -193,6 +212,8 @@ _HTML = r"""<!DOCTYPE html>
         <div><div class="lbl">Hdg Error</div><div class="val" id="vErr">--</div></div>
       </div>
     </div>
+  </div>
+  <div class="sidebar">
     <div class="card">
       <div class="card-title">Patrol Route</div>
       <div class="metric-grid">
@@ -733,9 +754,9 @@ function updateButtons(paused) {
 let lastFrame = -1, staleCount = 0;
 
 function resizeCanvas() {
-  const rect = canvas.parentElement.getBoundingClientRect();
+  const rect = canvas.getBoundingClientRect();
   canvas.width  = Math.floor(rect.width)  || 600;
-  canvas.height = Math.floor(rect.height) - 36 || 400;
+  canvas.height = Math.floor(rect.height) || 400;
   computeTransform();
 }
 

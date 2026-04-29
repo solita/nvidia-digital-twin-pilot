@@ -1,6 +1,10 @@
 .PHONY: init check-ports dev dash dash-restart stop help
 .DEFAULT_GOAL := help
 
+# Use host UID/GID so Docker-created files stay editable on the host
+HOST_UID := $(shell id -u)
+HOST_GID := $(shell id -g)
+
 # Ports required for streaming
 STREAMING_PORTS := 49100 47998 8080
 
@@ -19,12 +23,8 @@ init:
 	@mkdir -p ~/docker/isaac-sim/data/Kit
 	@mkdir -p ~/docker/isaac-sim/logs
 	@mkdir -p ~/docker/isaac-sim/pkg
-	@echo "==> Setting ownership (requires sudo)..."
-	@sudo chown -R 1234:1234 ~/docker/isaac-sim
-	@echo "==> Restoring .git ownership for host user..."
-	@if [ -d ~/docker/isaac-sim/data/nvidia-digital-twin-pilot/.git ]; then \
-		sudo chown -R $$(id -u):$$(id -g) ~/docker/isaac-sim/data/nvidia-digital-twin-pilot/.git; \
-	fi
+	@echo "==> Setting ownership to host user (UID=$(HOST_UID))..."
+	@sudo chown -R $(HOST_UID):$(HOST_GID) ~/docker/isaac-sim
 	@echo "==> Pulling Isaac Sim Docker image (skip if already present)..."
 	@docker pull nvcr.io/nvidia/isaac-sim:5.1.0
 	@echo "==> Installing Python dependencies..."
@@ -52,7 +52,7 @@ json.dump(cfg,open('$$CFG','w'),indent=2)"; \
 			echo '{\"persistent\":{\"app\":{\"exts\":{\"enabled\":{\"0\":\"isaacsim.code_editor.vscode-1.1.0\"}}}}}' | python3 -m json.tool > "$$CFG"; \
 		fi; \
 	done
-	@sudo chown -R 1234:1234 ~/docker/isaac-sim/data/Kit
+	@sudo chown -R $(HOST_UID):$(HOST_GID) ~/docker/isaac-sim/data/Kit
 	@echo "==> Checking streaming ports..."
 	@$(MAKE) --no-print-directory check-ports
 	@echo "==> Done. Run 'make dev' to start Isaac Sim."
@@ -112,7 +112,7 @@ dev:
 		-v ~/docker/isaac-sim/config:/isaac-sim/.nvidia-omniverse/config:rw \
 		-v ~/docker/isaac-sim/data:/isaac-sim/.local/share/ov/data:rw \
 		-v ~/docker/isaac-sim/pkg:/isaac-sim/.local/share/ov/pkg:rw \
-		-u 1234:1234 \
+		-u $(HOST_UID):$(HOST_GID) \
 		nvcr.io/nvidia/isaac-sim:5.1.0 \
 		-lc "export LD_LIBRARY_PATH=\$$LD_LIBRARY_PATH:/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib && ./runheadless.sh --/app/livestream/publicEndpointAddress=$$PUBLIC_IP --/app/livestream/port=49100"
 
