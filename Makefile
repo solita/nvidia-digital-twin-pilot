@@ -31,6 +31,28 @@ init:
 	@pip install --quiet fastapi uvicorn
 	@echo "==> Installing Isaac Sim VS Code Edition extension..."
 	@code --install-extension nvidia.isaacsim-vscode-edition --force
+	@echo "==> Enabling isaacsim.code_editor.vscode extension in Isaac Sim (autoload)..."
+	@for profile in "Isaac-Sim Streaming" "Isaac-Sim Full"; do \
+		CFG_DIR=~/docker/isaac-sim/data/Kit/"$$profile"/5.1; \
+		mkdir -p "$$CFG_DIR"; \
+		CFG="$$CFG_DIR/user.config.json"; \
+		if [ -f "$$CFG" ]; then \
+			python3 -c " \
+import json, sys; \
+cfg=json.load(open('$$CFG')); \
+p=cfg.setdefault('persistent',{}); \
+app=p.setdefault('app',{}); \
+exts=app.setdefault('exts',{}); \
+enabled=exts.setdefault('enabled',{}); \
+ext_id='isaacsim.code_editor.vscode-1.1.0'; \
+if ext_id not in enabled.values(): \
+    enabled[str(len(enabled))]=ext_id; \
+json.dump(cfg,open('$$CFG','w'),indent=2)"; \
+		else \
+			echo '{\"persistent\":{\"app\":{\"exts\":{\"enabled\":{\"0\":\"isaacsim.code_editor.vscode-1.1.0\"}}}}}' | python3 -m json.tool > "$$CFG"; \
+		fi; \
+	done
+	@sudo chown -R 1234:1234 ~/docker/isaac-sim/data/Kit
 	@echo "==> Checking streaming ports..."
 	@$(MAKE) --no-print-directory check-ports
 	@echo "==> Done. Run 'make dev' to start Isaac Sim."
