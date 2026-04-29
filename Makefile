@@ -21,6 +21,10 @@ init:
 	@mkdir -p ~/docker/isaac-sim/pkg
 	@echo "==> Setting ownership (requires sudo)..."
 	@sudo chown -R 1234:1234 ~/docker/isaac-sim
+	@echo "==> Restoring .git ownership for host user..."
+	@if [ -d ~/docker/isaac-sim/data/nvidia-digital-twin-pilot/.git ]; then \
+		sudo chown -R $$(id -u):$$(id -g) ~/docker/isaac-sim/data/nvidia-digital-twin-pilot/.git; \
+	fi
 	@echo "==> Pulling Isaac Sim Docker image (skip if already present)..."
 	@docker pull nvcr.io/nvidia/isaac-sim:5.1.0
 	@echo "==> Installing Python dependencies..."
