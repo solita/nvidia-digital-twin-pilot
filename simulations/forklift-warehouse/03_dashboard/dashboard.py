@@ -112,25 +112,34 @@ _HTML = r"""<!DOCTYPE html>
   }
   .pill.stale { background:var(--red); }
   .layout {
-    display:grid; grid-template-columns:1fr; gap:16px;
-    padding:16px 24px; min-height:calc(100vh - 57px);
-    grid-template-rows:auto auto;
+    display:grid; grid-template-columns:1fr 300px; gap:16px;
+    padding:16px 24px; height:calc(100vh - 57px);
+    align-items:stretch;
   }
   .map-wrap {
     background:var(--card); border:1px solid var(--border); border-radius:12px;
     position:relative; overflow:hidden;
-    /* Warehouse aspect ratio: VIEW height 98.7 / VIEW width 69.5 ≈ 1.42 */
-    aspect-ratio: 69.5 / 98.7;
-    max-height:calc(100vh - 120px);
-    width:auto;
+    min-height:400px;
   }
   .map-title { padding:10px 16px; font-size:0.8rem; color:var(--muted); border-bottom:1px solid var(--border); }
   canvas#map { display:block; width:100%; height:calc(100% - 37px); }
 
-
   .sidebar {
-    display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px;
+    display:flex; flex-direction:column; gap:12px;
     overflow-y:auto;
+  }
+
+  @media (max-width:700px) {
+    .layout {
+      grid-template-columns:1fr; height:auto; min-height:calc(100vh - 57px);
+    }
+    .map-wrap {
+      aspect-ratio:69.5 / 98.7; max-height:calc(100vh - 120px);
+    }
+    .sidebar {
+      flex-direction:row; flex-wrap:wrap;
+    }
+    .sidebar .card { flex:1 1 220px; }
   }
   .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
   .card-title { font-size:0.72rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin-bottom:10px; }
