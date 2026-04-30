@@ -1,0 +1,377 @@
+:root {
+    --bg: #0f1219;
+    --card: #1a1f2e;
+    --border: #2e3650;
+    --ink: #e8eaf0;
+    --muted: #7a8299;
+    --green: #4caf7d;
+    --yellow: #f5c842;
+    --red: #e05555;
+    --blue: #4a9eff;
+    --floor: #1e2433;
+    --wall: #3a4260;
+    --rack: #5c3d1a;
+    --column: #6b7a99;
+    --cube: #c05050;
+    --forklift: #f5c842;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Inter', system-ui, sans-serif;
+}
+
+header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--border);
+}
+
+header h1 {
+    font-size: 1.15rem;
+    font-weight: 600;
+}
+
+.pill {
+    margin-left: auto;
+    padding: 4px 12px;
+    border-radius: 99px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: .04em;
+    background: var(--green);
+    color: #000;
+}
+
+.pill.stale {
+    background: var(--red);
+}
+
+.layout {
+    display: grid;
+    grid-template-columns: 1fr 300px;
+    gap: 16px;
+    padding: 16px 24px;
+    height: calc(100vh - 57px);
+    align-items: stretch;
+}
+
+.map-wrap {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    position: relative;
+    overflow: hidden;
+    min-height: 400px;
+}
+
+.map-title {
+    padding: 10px 16px;
+    font-size: 0.8rem;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+}
+
+canvas#map {
+    display: block;
+    width: 100%;
+    height: calc(100% - 37px);
+}
+
+.sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    overflow-y: auto;
+}
+
+@media (max-width:700px) {
+    .layout {
+        grid-template-columns: 1fr;
+        height: auto;
+        min-height: calc(100vh - 57px);
+    }
+
+    .map-wrap {
+        aspect-ratio: 69.5 / 98.7;
+        max-height: calc(100vh - 120px);
+    }
+
+    .sidebar {
+        flex-direction: row;
+        flex-wrap: wrap;
+    }
+
+    .sidebar .card {
+        flex: 1 1 220px;
+    }
+}
+
+.card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+}
+
+.card-title {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    color: var(--muted);
+    margin-bottom: 10px;
+}
+
+.metric-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.lbl {
+    font-size: 0.7rem;
+    color: var(--muted);
+    margin-bottom: 2px;
+}
+
+.val {
+    font-size: 1.25rem;
+    font-weight: 700;
+}
+
+.badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+
+.badge.CLEAR {
+    background: #1b3a2a;
+    color: var(--green);
+}
+
+.badge.SLOW {
+    background: #3a3010;
+    color: var(--yellow);
+}
+
+.badge.STOP {
+    background: #3a1010;
+    color: var(--red);
+}
+
+.progress-bar {
+    height: 8px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-top: 6px;
+}
+
+.progress-bar .fill {
+    height: 100%;
+    background: var(--blue);
+    border-radius: 4px;
+    transition: width .3s;
+}
+
+.btn-bar {
+    display: flex;
+    gap: 10px;
+}
+
+.btn {
+    flex: 1;
+    padding: 10px 0;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    cursor: pointer;
+    letter-spacing: .03em;
+    transition: opacity .15s;
+}
+
+.btn:active {
+    opacity: .7;
+}
+
+.btn:disabled {
+    opacity: .4;
+    cursor: not-allowed;
+    filter: grayscale(.6);
+}
+
+.btn-pause {
+    background: #f5c842;
+    color: #000;
+}
+
+.btn-resume {
+    background: #4caf7d;
+    color: #000;
+}
+
+/* ── Sidebar navigation tabs ─────────────────────────────── */
+
+.sidebar-nav {
+    display: flex;
+    gap: 0;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.sidebar-tab {
+    flex: 1;
+    padding: 10px 0;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: .03em;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: color .15s, border-color .15s, background .15s;
+}
+
+.sidebar-tab:hover {
+    color: var(--ink);
+    background: rgba(74, 158, 255, 0.06);
+}
+
+.sidebar-tab.active {
+    color: var(--blue);
+    border-bottom-color: var(--blue);
+    background: rgba(74, 158, 255, 0.08);
+}
+
+/* ── Tab panels ──────────────────────────────────────────── */
+
+.tab-panel {
+    display: none;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.tab-panel.active {
+    display: flex;
+}
+
+/* ── Legend list ──────────────────────────────────────────── */
+
+.legend-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.75rem;
+    color: #b0b8c8;
+}
+
+.legend-swatch {
+    display: inline-block;
+    width: 14px;
+    height: 10px;
+    border-radius: 2px;
+    border: 1px solid #555;
+    flex-shrink: 0;
+}
+
+/* ── Fleet cards (dynamic) ───────────────────────────────── */
+
+#fleetCards {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.fleet-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+}
+
+.fleet-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+
+.fleet-card-name {
+    font-size: 0.9rem;
+    font-weight: 700;
+}
+
+.fleet-section {
+    margin-bottom: 10px;
+}
+
+.fleet-section:last-child {
+    margin-bottom: 0;
+}
+
+.fleet-section-title {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    color: var(--muted);
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 4px;
+}
+
+.fleet-metric-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+}
+
+.fleet-metric-grid .lbl {
+    font-size: 0.65rem;
+}
+
+.fleet-metric-grid .val {
+    font-size: 1rem;
+    font-weight: 700;
+}
+
+.fleet-controls {
+    display: flex;
+    gap: 8px;
+}
+
+.fleet-controls .btn {
+    flex: 1;
+    padding: 8px 0;
+    font-size: 0.8rem;
+}
+
+.btn-stop {
+    background: var(--red);
+    color: #fff;
+}
+
+.btn-stop:hover {
+    background: #c94444;
+}

@@ -180,6 +180,22 @@ def _start_cmd_server() -> None:
     )
 
 
+# ── Atomic state-file writer ───────────────────────────────────────────────────
+
+def _write_state_atomic(state: dict) -> None:
+    """Write state JSON via tmp + rename so readers never see a truncated file."""
+    tmp = config.STATE_JSON + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(state, f)
+        os.replace(tmp, config.STATE_JSON)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
 # ── Logging helper ─────────────────────────────────────────────────────────────
 
 def _log(level: str, msg: str, diag=None) -> None:
@@ -277,6 +293,7 @@ async def run_forklift() -> None:
                 drive_api.GetTargetVelocityAttr().Set(0.0)
                 steer_api.GetTargetPositionAttr().Set(0.0)
                 _live_state["paused"] = True
+                _write_state_atomic(_live_state)
                 _log("info", "PAUSED", diag)
             elif action == "resume":
                 paused = False
@@ -292,11 +309,6 @@ async def run_forklift() -> None:
         if paused:
             drive_api.GetTargetVelocityAttr().Set(0.0)
             steer_api.GetTargetPositionAttr().Set(0.0)
-            try:
-                with open(config.STATE_JSON, "w") as _sf:
-                    json.dump(_live_state, _sf)
-            except Exception:
-                pass
             await app.next_update_async()
             continue
 
@@ -350,11 +362,7 @@ async def run_forklift() -> None:
                 "paused":       paused,
             }
             # Also write to disk for dashboard fallback / diag
-            try:
-                with open(config.STATE_JSON, "w") as _sf:
-                    json.dump(_live_state, _sf)
-            except Exception:
-                pass
+            _write_state_atomic(_live_state)
 
         # ── Diag log every 60 frames ───────────────────────────────────────────
         if frame % 60 == 0:
