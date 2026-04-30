@@ -105,6 +105,12 @@ STUCK_CHECK_FRAMES  = 180   # no movement for this many frames → escape maneuv
 STUCK_ESCAPE_FRAMES =  80   # escape duration: 40 reverse + 40 forward-with-steer
 STUCK_MIN_MOVE      = 0.10  # m — minimum displacement to reset stuck counter
 
+# ── Status indicator (dashboard badge) ─────────────────────────────────────────
+
+STATUS_STUCK_SECONDS = 7.0   # stayed within radius for this long → STUCK
+STATUS_STUCK_RADIUS  = 10.0  # metres — bounding radius for stuck detection
+STATUS_PHYSICS_HZ    = 60    # assumed physics step rate (Isaac Sim default)
+
 # ── Output file paths (inside Isaac Sim container) ────────────────────────────
 
 _OUT = (

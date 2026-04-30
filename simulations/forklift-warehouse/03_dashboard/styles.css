@@ -171,6 +171,26 @@ canvas#map {
     color: var(--red);
 }
 
+.badge.DRIVING {
+    background: #1b3a2a;
+    color: var(--green);
+}
+
+.badge.DODGING {
+    background: #3a3010;
+    color: var(--yellow);
+}
+
+.badge.STUCK {
+    background: #3a1010;
+    color: var(--red);
+}
+
+.badge.PAUSED {
+    background: #2a2a3a;
+    color: var(--muted);
+}
+
 .progress-bar {
     height: 8px;
     background: var(--border);

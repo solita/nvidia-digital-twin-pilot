@@ -432,6 +432,7 @@ function buildFleetCard(idx) {
     card.innerHTML = `
         <div class="fleet-card-header">
             <span class="fleet-card-name">Forklift ${idx + 1}</span>
+            <span class="badge DRIVING" data-fld="statusBadge">DRIVING</span>
             <span class="badge CLEAR" data-fld="lidarBadge">CLEAR</span>
         </div>
         <div class="fleet-section">
@@ -536,6 +537,11 @@ function updateFleetCard(card, data) {
     const badge = fld(card, 'lidarBadge');
     badge.textContent = ls;
     badge.className = 'badge ' + ls;
+
+    const fs = data.forklift_status || 'DRIVING';
+    const statusBadge = fld(card, 'statusBadge');
+    statusBadge.textContent = fs;
+    statusBadge.className = 'badge ' + fs;
 
     fld(card, 'fwd').textContent = data.forward_min != null
         ? (data.forward_min >= 9.8 ? 'Clear' : data.forward_min.toFixed(1) + ' m') : '--';

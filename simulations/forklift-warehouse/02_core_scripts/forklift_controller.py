@@ -26,8 +26,10 @@ Dev owner: Integration / sim lead
 from __future__ import annotations
 
 import asyncio
+import collections
 import importlib.util
 import json
+import math
 import os
 import queue
 import socket
@@ -325,6 +327,11 @@ async def run_forklift() -> None:
     speed_override = None   # None = use nav's own speed; 0.0-1.0 = override fraction
     reset_requested = False
 
+    # ── Status indicator ring buffer (7 s window at assumed 60 Hz) ─────────
+    _status_buf_len = int(config.STATUS_STUCK_SECONDS * config.STATUS_PHYSICS_HZ)
+    _status_buf: collections.deque = collections.deque(maxlen=_status_buf_len)
+    forklift_status = "DRIVING"
+
     while True:
         if not timeline.is_playing():
             drive_api.GetTargetVelocityAttr().Set(0.0)
@@ -343,14 +350,19 @@ async def run_forklift() -> None:
 
             if action == "pause":
                 paused = True
+                forklift_status = "PAUSED"
                 drive_api.GetTargetVelocityAttr().Set(0.0)
                 steer_api.GetTargetPositionAttr().Set(0.0)
                 _live_state["paused"] = True
+                _live_state["forklift_status"] = forklift_status
                 _write_state_atomic(_live_state)
                 _log("info", "PAUSED", diag)
             elif action == "resume":
                 paused = False
+                forklift_status = "DRIVING"
                 _live_state["paused"] = False
+                _live_state["forklift_status"] = forklift_status
+                _status_buf.clear()
                 _log("info", "RESUMED", diag)
             elif action == "speed" and value is not None:
                 try:
@@ -412,6 +424,8 @@ async def run_forklift() -> None:
             speed_override = None
             paused = False
             frame = 0
+            _status_buf.clear()
+            forklift_status = "DRIVING"
             _log("info", "RESET LOCATION — teleported to start, nav reset", diag)
             continue
 
@@ -439,6 +453,24 @@ async def run_forklift() -> None:
         if cmd.escape_just_started:
             lidar.reset_debounce()
             _log("warn", f"STUCK — escape at ({fx:.1f},{fy:.1f})", diag)
+
+        # ── Compute forklift status indicator ────────────────────────────────
+        _status_buf.append((fx, fy))
+        if len(_status_buf) >= _status_buf_len:
+            ox, oy = _status_buf[0]
+            max_disp = max(
+                math.hypot(px - ox, py - oy) for px, py in _status_buf
+            )
+            is_stuck = max_disp < config.STATUS_STUCK_RADIUS
+        else:
+            is_stuck = False
+
+        if is_stuck:
+            forklift_status = "STUCK"
+        elif cmd.is_escaping or lidar_result.fwd_stop:
+            forklift_status = "DODGING"
+        else:
+            forklift_status = "DRIVING"
 
         # ── Apply speed override if set ────────────────────────────────────────
         target_vel = cmd.target_velocity
@@ -470,6 +502,7 @@ async def run_forklift() -> None:
                 "lidar_slices": lidar_result.lidar_slices,
                 "waypoints":    config.WAYPOINTS,
                 "paused":       paused,
+                "forklift_status": forklift_status,
             }
             # Also write to disk for dashboard fallback / diag
             _write_state_atomic(_live_state)
