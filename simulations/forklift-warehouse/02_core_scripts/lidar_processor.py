@@ -59,6 +59,11 @@ class LidarProcessor:
 
     _ORIG_MAX_RANGE = 8.0  # factory default — used as the scaling baseline
 
+    @property
+    def _no_hit(self) -> float:
+        """Sentinel value meaning 'no real hit' — always above every scaled threshold."""
+        return self.max_range * 1.5
+
     def __init__(self) -> None:
         self._interface          = None
         self._safe_zone: list    = _compute_safe_zone()
@@ -123,7 +128,7 @@ class LidarProcessor:
         the interface is unavailable, or a read error occurs.
         """
         empty = LidarResult(
-            forward_min=9.9, fwd_stop=False, fwd_slow=False,
+            forward_min=self._no_hit, fwd_stop=False, fwd_slow=False,
             repulsion_steer=0.0, debounce_count=self._debounce_count,
         )
         if not LIDAR_ENABLED or self._interface is None:
@@ -193,7 +198,7 @@ class LidarProcessor:
             for i in range(LIDAR_FORWARD_RAY - 6, LIDAR_FORWARD_RAY + 7)
             if math.isfinite(flat[i % n]) and 0.3 < flat[i % n] < self.hard_stop_dist
         ]
-        forward_min = min(emerg_hits) if len(emerg_hits) >= 2 else 9.9
+        forward_min = min(emerg_hits) if len(emerg_hits) >= 2 else self._no_hit
 
         # 4. Forward cone — two-tier hit-count threshold
         #    Near  0.8–4.5 m: narrow column fills ~5 rays  → threshold = 4
@@ -246,7 +251,7 @@ class LidarProcessor:
 
     def _compute_repulsion(self, flat: list, n: int) -> float:
         """APF 1/d lateral repulsion: find closest hit per side, compute net push."""
-        left_min = right_min = 9.9
+        left_min = right_min = self._no_hit
         for i in range(n):
             d = flat[i]
             if not math.isfinite(d) or d > self.repulse_range or d < 0.5:
@@ -260,21 +265,22 @@ class LidarProcessor:
                 right_min = min(right_min, d)
             else:
                 left_min  = min(left_min,  d)
-        r_left  = LIDAR_REPULSE_GAIN / left_min  if left_min  < self.repulse_range else 0.0
-        r_right = LIDAR_REPULSE_GAIN / right_min if right_min < self.repulse_range else 0.0
+        r_left  = LIDAR_REPULSE_GAIN / left_min  if left_min  < self.repulse_range and left_min  < self._no_hit else 0.0
+        r_right = LIDAR_REPULSE_GAIN / right_min if right_min < self.repulse_range and right_min < self._no_hit else 0.0
         return max(-STEER_MAX, min(STEER_MAX, r_left - r_right))
 
     def _open_side_scan(self, flat: list, n: int) -> tuple[float, float]:
         """Return (right_min, left_min) in ±25-80° lateral arcs."""
+        no_hit = self._no_hit
         ro_r = min(
             (flat[i % n] for i in range(LIDAR_FORWARD_RAY + 25, LIDAR_FORWARD_RAY + 80)
              if math.isfinite(flat[i % n]) and flat[i % n] >= 0.5),
-            default=9.9,
+            default=no_hit,
         )
         ro_l = min(
             (flat[i % n] for i in range(LIDAR_FORWARD_RAY - 80, LIDAR_FORWARD_RAY - 25)
              if math.isfinite(flat[i % n]) and flat[i % n] >= 0.5),
-            default=9.9,
+            default=no_hit,
         )
         return ro_r, ro_l
 

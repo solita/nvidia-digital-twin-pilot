@@ -323,6 +323,7 @@ async def run_forklift() -> None:
     frame         = 0
     paused        = False
     speed_override = None   # None = use nav's own speed; 0.0-1.0 = override fraction
+    reset_requested = False
 
     while True:
         if not timeline.is_playing():
@@ -363,6 +364,56 @@ async def run_forklift() -> None:
                     _log("info", f"LIDAR range → {float(value):.1f} m", diag)
                 except (TypeError, ValueError):
                     pass
+            elif action == "reset_location":
+                reset_requested = True
+
+        # ── Reset location (needs await — must be outside command loop) ────────
+        if reset_requested:
+            reset_requested = False
+            # Stop physics so the transform actually sticks
+            drive_api.GetTargetVelocityAttr().Set(0.0)
+            steer_api.GetTargetPositionAttr().Set(0.0)
+            timeline.stop()
+            for _ in range(10):
+                await app.next_update_async()
+
+            # Teleport forklift to start pose
+            root_prim = stage.GetPrimAtPath(config.FORKLIFT_ROOT_PRIM)
+            if root_prim.IsValid():
+                xform = UsdGeom.Xformable(root_prim)
+                ops   = {op.GetOpName(): op for op in xform.GetOrderedXformOps()}
+                if "xformOp:translate" in ops:
+                    ops["xformOp:translate"].Set(Gf.Vec3d(config.REST_X, config.REST_Y, config.REST_Z))
+                rot  = Gf.Rotation(Gf.Vec3d(0, 0, 1), config.REST_HEADING)
+                q    = rot.GetQuat()
+                gf_q = Gf.Quatf(float(q.GetReal()),
+                                 float(q.GetImaginary()[0]),
+                                 float(q.GetImaginary()[1]),
+                                 float(q.GetImaginary()[2]))
+                if "xformOp:orient" in ops:
+                    ops["xformOp:orient"].Set(gf_q)
+                # Reset steer joint straight
+                steer_api.GetTargetPositionAttr().Set(0.0)
+                steer_api.GetStiffnessAttr().Set(config.STEER_STIFFNESS_SETTLE)
+
+            for _ in range(10):
+                await app.next_update_async()
+
+            # Restart physics and re-settle
+            timeline.play()
+            for _ in range(config.SETTLE_FRAMES):
+                steer_api.GetTargetPositionAttr().Set(0.0)
+                await app.next_update_async()
+            steer_api.GetStiffnessAttr().Set(config.STEER_STIFFNESS_DRIVE)
+
+            # Reset nav, lidar, counters
+            nav = NavController()
+            lidar.reset_debounce()
+            speed_override = None
+            paused = False
+            frame = 0
+            _log("info", "RESET LOCATION — teleported to start, nav reset", diag)
+            continue
 
         if paused:
             drive_api.GetTargetVelocityAttr().Set(0.0)
@@ -392,7 +443,7 @@ async def run_forklift() -> None:
         # ── Apply speed override if set ────────────────────────────────────────
         target_vel = cmd.target_velocity
         if speed_override is not None:
-            target_vel = config.DRIVE_VELOCITY * speed_override * (-1 if config.DRIVE_VELOCITY < 0 else 1)
+            target_vel = config.DRIVE_VELOCITY * speed_override
 
         # ── Act ────────────────────────────────────────────────────────────────
         drive_api.GetTargetVelocityAttr().Set(target_vel)

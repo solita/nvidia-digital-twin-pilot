@@ -223,6 +223,15 @@ canvas#map {
     color: #000;
 }
 
+.btn-reset {
+    background: #5b8def;
+    color: #fff;
+}
+
+.btn-reset:hover {
+    background: #4a7bd4;
+}
+
 /* ── Sidebar navigation tabs ─────────────────────────────── */
 
 .sidebar-nav {

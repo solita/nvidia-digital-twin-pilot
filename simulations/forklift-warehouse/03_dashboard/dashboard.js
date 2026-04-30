@@ -469,6 +469,9 @@ function buildFleetCard(idx) {
                 <button class="btn btn-stop" data-fld="btnStop">⏹ Stop</button>
                 <button class="btn btn-resume" data-fld="btnResume">▶ Resume</button>
             </div>
+            <div class="fleet-controls" style="margin-top:6px">
+                <button class="btn btn-reset" data-fld="btnReset">↺ Reset Location</button>
+            </div>
             <div data-fld="cmdStatus" style="font-size:0.72rem;color:var(--muted);margin-top:6px"></div>
         </div>
         <details class="fleet-overrides">
@@ -487,8 +490,10 @@ function buildFleetCard(idx) {
     // Bind control buttons
     const btnStop = card.querySelector('[data-fld="btnStop"]');
     const btnResume = card.querySelector('[data-fld="btnResume"]');
+    const btnReset = card.querySelector('[data-fld="btnReset"]');
     btnStop.addEventListener('click', () => sendCmd('pause', idx));
     btnResume.addEventListener('click', () => sendCmd('resume', idx));
+    btnReset.addEventListener('click', () => sendResetLocation(idx));
 
     // Bind override sliders (debounced 200 ms)
     const speedSlider = card.querySelector('[data-fld="speedSlider"]');
@@ -549,6 +554,8 @@ function updateFleetCard(card, data) {
     const btnResume = fld(card, 'btnResume');
     btnStop.disabled = !_controllerAlive || paused;
     btnResume.disabled = !_controllerAlive || !paused;
+    const btnReset = fld(card, 'btnReset');
+    btnReset.disabled = !_controllerAlive;
 
     // Sync override sliders (skip if user is actively dragging)
     const speedSlider = card.querySelector('[data-fld="speedSlider"]');
@@ -624,6 +631,26 @@ function sendOverride(action, value, fleetIdx) {
             fld(_fleetCards[fleetIdx], 'cmdStatus').textContent = 'Override failed — is the sim running?';
         }
     });
+}
+
+function sendResetLocation(fleetIdx) {
+    if (!_controllerAlive) return;
+    if (_fleetCards[fleetIdx]) {
+        fld(_fleetCards[fleetIdx], 'cmdStatus').textContent = 'Resetting location…';
+    }
+    fetch('/api/cmd/reset_location', { method: 'POST' })
+        .then(r => r.text())
+        .then(() => {
+            if (_fleetCards[fleetIdx]) {
+                fld(_fleetCards[fleetIdx], 'cmdStatus').textContent = 'Location reset';
+                setTimeout(() => { fld(_fleetCards[fleetIdx], 'cmdStatus').textContent = ''; }, 3000);
+            }
+        })
+        .catch(() => {
+            if (_fleetCards[fleetIdx]) {
+                fld(_fleetCards[fleetIdx], 'cmdStatus').textContent = 'Reset failed — is the sim running?';
+            }
+        });
 }
 
 // Poll controller liveness every 3 s and enable/disable buttons

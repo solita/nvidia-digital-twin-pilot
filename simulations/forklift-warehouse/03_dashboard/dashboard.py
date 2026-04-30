@@ -147,6 +147,11 @@ def cmd_resume():
     return _post_controller_cmd("resume")
 
 
+@app.post("/api/cmd/reset_location", response_class=PlainTextResponse)
+def cmd_reset_location():
+    return _post_controller_cmd("reset_location")
+
+
 @app.post("/api/cmd/override")
 def cmd_override(body: dict):
     """Forward an override action (speed, lidar_range, …) to the controller."""
