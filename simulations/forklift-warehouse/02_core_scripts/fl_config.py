@@ -105,6 +105,12 @@ STUCK_CHECK_FRAMES  = 180   # no movement for this many frames → escape maneuv
 STUCK_ESCAPE_FRAMES =  80   # escape duration: 40 reverse + 40 forward-with-steer
 STUCK_MIN_MOVE      = 0.10  # m — minimum displacement to reset stuck counter
 
+# ── Status indicator (dashboard badge) ─────────────────────────────────────────
+
+STATUS_STUCK_SECONDS = 7.0   # stayed within radius for this long → STUCK
+STATUS_STUCK_RADIUS  = 10.0  # metres — bounding radius for stuck detection
+STATUS_PHYSICS_HZ    = 60    # assumed physics step rate (Isaac Sim default)
+
 # ── Output file paths (inside Isaac Sim container) ────────────────────────────
 
 _OUT = (
@@ -120,3 +126,12 @@ STATE_JSON = f"{_OUT}/forklift_state.json"
 # reachable from the host without any docker port mapping changes.
 
 CMD_SERVER_PORT = 8081
+
+# ── Forklift rest / spawn pose ─────────────────────────────────────────────────
+# Where the forklift is placed before each controller run.
+# X=-15: open centre-west area between columns at X=-27 and X=-4.
+FORKLIFT_ROOT_PRIM = "/World/forklift_b"
+REST_X       = -15.0
+REST_Y       = -17.5
+REST_Z       =   0.0
+REST_HEADING =  90.0   # forks-forward: local -X points south toward WP0

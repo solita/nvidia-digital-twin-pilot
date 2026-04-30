@@ -18,12 +18,14 @@ Then open http://<host>:8080 in a browser.
 import asyncio
 import json
 import os
+import pathlib
 import signal
 import subprocess
 import urllib.request
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from starlette.staticfiles import StaticFiles
 
 PORT = 8080
 
@@ -84,695 +86,12 @@ def _read_state() -> dict:
         return _EMPTY_STATE
 
 
-_HTML = r"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Forklift Dashboard</title>
-<style>
-  :root {
-    --bg:#0f1219; --card:#1a1f2e; --border:#2e3650;
-    --ink:#e8eaf0; --muted:#7a8299;
-    --green:#4caf7d; --yellow:#f5c842; --red:#e05555; --blue:#4a9eff;
-    --floor:#1e2433; --wall:#3a4260; --rack:#5c3d1a; --column:#6b7a99;
-    --cube:#c05050; --forklift:#f5c842;
-  }
-  * { box-sizing:border-box; margin:0; padding:0; }
-  body { background:var(--bg); color:var(--ink); font-family:'Inter',system-ui,sans-serif; }
-  header {
-    display:flex; align-items:center; gap:12px;
-    padding:14px 24px; border-bottom:1px solid var(--border);
-  }
-  header h1 { font-size:1.15rem; font-weight:600; }
-  .pill {
-    margin-left:auto; padding:4px 12px; border-radius:99px;
-    font-size:0.78rem; font-weight:600; letter-spacing:.04em;
-    background:var(--green); color:#000;
-  }
-  .pill.stale { background:var(--red); }
-  .layout {
-    display:grid; grid-template-columns:1fr 300px; gap:16px;
-    padding:16px 24px; height:calc(100vh - 57px);
-  }
-  .map-wrap {
-    background:var(--card); border:1px solid var(--border); border-radius:12px;
-    display:flex; flex-direction:column; overflow:hidden; position:relative;
-  }
-  .map-title { padding:10px 16px; font-size:0.8rem; color:var(--muted); border-bottom:1px solid var(--border); }
-  canvas#map { flex:1; width:100%; display:block; }
-  .sidebar { display:flex; flex-direction:column; gap:12px; overflow-y:auto; }
-  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
-  .card-title { font-size:0.72rem; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin-bottom:10px; }
-  .metric-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-  .lbl { font-size:0.7rem; color:var(--muted); margin-bottom:2px; }
-  .val { font-size:1.25rem; font-weight:700; }
-  .badge { display:inline-block; padding:3px 10px; border-radius:6px; font-size:0.78rem; font-weight:700; }
-  .badge.CLEAR { background:#1b3a2a; color:var(--green); }
-  .badge.SLOW  { background:#3a3010; color:var(--yellow); }
-  .badge.STOP  { background:#3a1010; color:var(--red); }
-  .progress-bar { height:8px; background:var(--border); border-radius:4px; overflow:hidden; margin-top:6px; }
-  .progress-bar .fill { height:100%; background:var(--blue); border-radius:4px; transition:width .3s; }
-  .btn-bar { display:flex; gap:10px; }
-  .btn {
-    flex:1; padding:10px 0; border:none; border-radius:8px;
-    font-size:0.85rem; font-weight:700; cursor:pointer; letter-spacing:.03em;
-    transition: opacity .15s;
-  }
-  .btn:active { opacity:.7; }
-  .btn-pause  { background:#f5c842; color:#000; }
-  .btn-resume { background:#4caf7d; color:#000; }
-  .legend { display:flex; flex-wrap:wrap; gap:10px; }
-  .legend-item { display:flex; align-items:center; gap:5px; font-size:0.72rem; color:var(--muted); }
-  .legend-swatch { width:14px; height:10px; border-radius:2px; }
-</style>
-</head>
-<body>
-<header>
-  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-    <rect x="1" y="3" width="15" height="13" rx="1"/>
-    <path d="M16 8h5l2 3v4h-7V8z"/>
-    <circle cx="5.5" cy="18.5" r="2.5"/>
-    <circle cx="18.5" cy="18.5" r="2.5"/>
-  </svg>
-  <h1>Forklift Warehouse — Top-Down View</h1>
-  <span class="pill" id="liveTag">LIVE</span>
-</header>
-<div class="layout">
-  <div class="map-wrap">
-    <div class="map-title">scene_assembly.usd — All assets to scale (1 grid = 10 m) &nbsp;|&nbsp; X → east, Y ↑ north</div>
-    <canvas id="map"></canvas>
-  </div>
-  <div class="sidebar">
-    <div class="card">
-      <div class="card-title">Scene Legend</div>
-      <div class="legend">
-        <div class="legend-item"><div class="legend-swatch" style="background:#2a3348;border:1px solid #3a4260"></div>Warehouse floor</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#3a4260"></div>Walls</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#5c3d1a"></div>Rack shelving</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#6b7a99"></div>Columns</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#c05050"></div>Obstacle cubes</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#ff8c00"></div>Traffic cones</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#8c5a28"></div>Cardboard boxes</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#5a8c6b"></div>Stack composites</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#f5c842"></div>Forklift body</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#8b9ab0"></div>Fork tines →</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#4a9eff"></div>Waypoints</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#4caf7d55"></div>Trail</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:rgba(76,175,125,0.3)"></div>LIDAR clear</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:rgba(224,85,85,0.4)"></div>LIDAR hit</div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-title">Position &amp; Heading</div>
-      <div class="metric-grid">
-        <div><div class="lbl">X</div><div class="val" id="vX">--</div></div>
-        <div><div class="lbl">Y</div><div class="val" id="vY">--</div></div>
-        <div><div class="lbl">Heading</div><div class="val" id="vHdg">--</div></div>
-        <div><div class="lbl">Hdg Error</div><div class="val" id="vErr">--</div></div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-title">Patrol Route</div>
-      <div class="metric-grid">
-        <div><div class="lbl">Waypoint</div><div class="val" id="vWp">--</div></div>
-        <div><div class="lbl">Lap</div><div class="val" id="vLap">--</div></div>
-        <div><div class="lbl">Dist to WP</div><div class="val" id="vDist">--</div></div>
-        <div><div class="lbl">Frame</div><div class="val" id="vFrame">--</div></div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-title">LIDAR</div>
-      <div style="margin-bottom:8px"><span class="badge CLEAR" id="lidarBadge">CLEAR</span></div>
-      <div class="metric-grid">
-        <div><div class="lbl">Fwd Min</div><div class="val" id="vFwd">--</div></div>
-        <div><div class="lbl">Repulsion</div><div class="val" id="vRep">--</div></div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-title">Controls</div>
-      <div class="btn-bar">
-        <button class="btn btn-pause" id="btnPause" onclick="sendCmd('pause')">⏸ Pause</button>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-title">Speed</div>
-      <div class="val" id="vSpeed">--%</div>
-      <div class="progress-bar"><div class="fill" id="speedBar" style="width:0%"></div></div>
-    </div>
-    <div class="card">
-      <div class="card-title">Scene Assets</div>
-      <div style="font-size:0.75rem; color:var(--muted); line-height:1.6">
-        <div>/World/warehouse <span style="color:#5c8a5c">(payload)</span></div>
-        <div>/World/forklift_b <span style="color:#5c8a5c">(payload)</span></div>
-        <div>/World/Cube .. Cube_06 <span style="color:#c05050">×6 obstacles</span></div>
-        <div>/World/Obstacles <span style="color:#ff8c00">×16 path obstacles</span></div>
-        <div>/World/PhysicsScene</div>
-        <div>/World/PhysicsGround <span style="color:#555">(invisible)</span></div>
-      </div>
-    </div>
-    <div class="footnote" id="updated">Waiting for simulation data...</div>
-  </div>
-</div>
-<script>
-// ═══════════════════════════════════════════════════════════════════════
-// SCENE DATA — extracted from scene_assembly.usd & controller spatial
-// calibration.  All coordinates in world-space metres.
-//
-// Cardinal directions: +Y = north, -Y = south, +X = east, -X = west.
-// Warehouse long axis runs north–south (Y).
-// Long walls are the east (X) and west (-X) walls.
-// ═══════════════════════════════════════════════════════════════════════
-
-// /World/warehouse — Simple_Warehouse payload, translate (-0.50, -0.76),
-// scale (3.019, 3.004, 3.169).
-// Bounds derived from controller calibration:
-//   south floor boundary Y ≈ -36.4,  north wall Y ≈ 52.3
-//   west rack at X = -30.27 → west wall just behind ≈ X = -31.5
-//   easternmost column X = 26.52,  ~9 m buffer comment → east wall ≈ X = +28
-const WAREHOUSE = {
-  xMin: -31.5, xMax: 28.0,     // ~59.5 m east–west (short dimension)
-  yMin: -36.4, yMax: 52.3,     // ~88.7 m north–south (long dimension)
-  wallThickness: 0.8,
-};
-
-// Viewport — add padding around the warehouse so everything fits
-const VPAD = 5;
-const VIEW = {
-  xMin: WAREHOUSE.xMin - VPAD,
-  xMax: WAREHOUSE.xMax + VPAD,
-  yMin: WAREHOUSE.yMin - VPAD,
-  yMax: WAREHOUSE.yMax + VPAD,
-};
-
-// Interior rack shelving (from controller spatial calibration)
-// West rack: solid collision block against the west long wall
-const RACKS = [
-  { label:"West Rack", xMin:-30.27, xMax:-27.02, yMin:-12.06, yMax:36.38 },
-];
-
-// Structural columns — 0.60 m × 0.60 m pillars (full height Z).
-// 4 column rows at known X positions (from controller obstacle data).
-// Columns span Y from -27.80 (south end) to +45.12 (north end).
-// Individual pillar Y positions estimated from even spacing within that range.
-const COLUMN_ROWS_X = [-27.16, -4.37, 8.41, 26.52];
-const COLUMN_Y_MIN  = -27.80;
-const COLUMN_Y_MAX  =  45.12;
-const COLUMN_SPACING = 14.5;   // approximate Y spacing between pillars
-const COLUMN_SIZE    =  0.60;  // metres each side
-
-// Build individual column positions
-const COLUMNS = [];
-COLUMN_ROWS_X.forEach(cx => {
-  for (let y = COLUMN_Y_MIN; y <= COLUMN_Y_MAX + 0.1; y += COLUMN_SPACING) {
-    COLUMNS.push({ x: cx, y: y, w: COLUMN_SIZE, h: COLUMN_SIZE });
-  }
-});
-
-// /World/Cube .. /World/Cube_06 — 1 m³ obstacle mesh cubes (from USD)
-const CUBES = [
-  { label:"Cube",    x:-15.01, y:-23.87, size:1.0 },
-  { label:"Cube_01", x:-15.01, y:-26.38, size:1.0 },
-  { label:"Cube_02", x: -6.80, y:-26.54, size:1.0 },
-  { label:"Cube_03", x: -6.80, y:-27.56, size:1.0 },
-  { label:"Cube_04", x:-14.14, y:-29.98, size:1.0 },
-  { label:"Cube_06", x: -1.24, y:-33.05, size:1.0 },
-];
-
-// /World/Obstacles — spawned by spawn_path_obstacles.py
-// Traffic cones (≈0.75 m tall, 0.25 m radius), cardboard boxes (≈0.4–0.6 m), and stacks (4× scaled composite: pallet + palette + KLT bins)
-const PATH_OBSTACLES = [
-  { kind:"cone", x:  0.0,  y:-24.8 },
-  { kind:"box",  x:  6.0,  y:-27.2 },
-  { kind:"cone", x: 12.0,  y:-24.6 },
-  { kind:"stack", x: 18.5,  y: -5.0 },
-  { kind:"stack", x: 18.2,  y: 30.0 },
-  { kind:"cone", x: 15.5,  y: 15.0 },
-  { kind:"box",  x: 18.2,  y: 30.0 },
-  { kind:"cone", x: 10.0,  y: 46.5 },
-  { kind:"box",  x:  0.0,  y: 49.5 },
-  { kind:"cone", x:-12.0,  y: 46.4 },
-  { kind:"stack", x:-22.5,  y: 30.0 },
-  { kind:"box",  x:-22.5,  y: 30.0 },
-  { kind:"cone", x:-25.5,  y: 10.0 },
-  { kind:"box",  x:-22.8,  y:-10.0 },
-  { kind:"cone", x:-17.0,  y:-22.0 },
-  { kind:"box",  x:-12.0,  y:-20.0 },
-];
-
-// Forklift dimensions (metres) — from USD ForkliftB bbox
-const FL_WIDTH  = 3.03;   // X extent
-const FL_LENGTH = 4.00;   // Y extent (front-to-back)
-
-// ═══════════════════════════════════════════════════════════════════════
-// RENDERING
-// ═══════════════════════════════════════════════════════════════════════
-
-const canvas = document.getElementById("map");
-const ctx    = canvas.getContext("2d");
-const trail  = [];
-const TRAIL_MAX = 800;
-
-// ── Uniform-scale coordinate transform ───────────────────────────────
-// Uses a single px-per-metre scale so X and Y are never distorted.
-// The map is centred in the canvas; unused margins stay as background.
-let _scale = 1, _ox = 0, _oy = 0;  // computed each frame in resizeCanvas
-
-function computeTransform() {
-  const W = canvas.width, H = canvas.height;
-  const spanX = VIEW.xMax - VIEW.xMin;
-  const spanY = VIEW.yMax - VIEW.yMin;
-  _scale = Math.min(W / spanX, H / spanY);       // uniform px/m
-  _ox = (W - spanX * _scale) / 2;                 // centre horizontally
-  _oy = (H - spanY * _scale) / 2;                 // centre vertically
-}
-
-function toCanvas(wx, wy) {
-  return [
-    _ox + (wx - VIEW.xMin) * _scale,
-    _oy + (VIEW.yMax - wy) * _scale,              // Y flipped: north = up
-  ];
-}
-function worldToPixel(metres) {
-  return metres * _scale;
-}
-
-// Draw a world-space axis-aligned rect
-function drawRect(xMin, yMin, xMax, yMax, fill, stroke, lw) {
-  const [x1,y1] = toCanvas(xMin, yMax);  // top-left in canvas
-  const [x2,y2] = toCanvas(xMax, yMin);  // bottom-right in canvas
-  if (fill) { ctx.fillStyle = fill; ctx.fillRect(x1,y1,x2-x1,y2-y1); }
-  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw||1; ctx.strokeRect(x1,y1,x2-x1,y2-y1); }
-}
-
-// ── Static scene layer (redrawn every frame for simplicity) ──────────
-
-function drawScene() {
-  const W = canvas.width, H = canvas.height;
-  const sc = worldToPixel(1);  // pixels per metre
-
-  // Sky / outside
-  ctx.fillStyle = "#0f1219";
-  ctx.fillRect(0, 0, W, H);
-
-  // Warehouse floor
-  drawRect(WAREHOUSE.xMin, WAREHOUSE.yMin, WAREHOUSE.xMax, WAREHOUSE.yMax, "#1e2433", null);
-
-  // Grid lines (every 10 m)
-  ctx.strokeStyle = "#252d40"; ctx.lineWidth = 1;
-  for (let x = Math.ceil(VIEW.xMin/10)*10; x <= VIEW.xMax; x += 10) {
-    const [cx] = toCanvas(x, 0);
-    ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx,H); ctx.stroke();
-  }
-  for (let y = Math.ceil(VIEW.yMin/10)*10; y <= VIEW.yMax; y += 10) {
-    const [,cy] = toCanvas(0, y);
-    ctx.beginPath(); ctx.moveTo(0,cy); ctx.lineTo(W,cy); ctx.stroke();
-  }
-
-  // Axis labels
-  ctx.fillStyle = "#3a4260"; ctx.font = "10px system-ui"; ctx.textBaseline = "alphabetic";
-  ctx.textAlign = "center";
-  for (let x = Math.ceil(VIEW.xMin/10)*10; x <= VIEW.xMax; x += 10) {
-    const [cx,cy] = toCanvas(x, VIEW.yMin);
-    ctx.fillText(x+"m", cx, cy - 4);
-  }
-  ctx.textAlign = "right";
-  for (let y = Math.ceil(VIEW.yMin/10)*10; y <= VIEW.yMax; y += 10) {
-    const [cx,cy] = toCanvas(VIEW.xMin, y);
-    ctx.fillText(y+"m", cx+22, cy+4);
-  }
-
-  // Warehouse walls (thick outline)
-  const wt = WAREHOUSE.wallThickness;
-  ctx.fillStyle = "#3a4260";
-  // bottom wall
-  drawRect(WAREHOUSE.xMin, WAREHOUSE.yMin, WAREHOUSE.xMax, WAREHOUSE.yMin+wt, "#3a4260", null);
-  // top wall
-  drawRect(WAREHOUSE.xMin, WAREHOUSE.yMax-wt, WAREHOUSE.xMax, WAREHOUSE.yMax, "#3a4260", null);
-  // left wall
-  drawRect(WAREHOUSE.xMin, WAREHOUSE.yMin, WAREHOUSE.xMin+wt, WAREHOUSE.yMax, "#3a4260", null);
-  // right wall
-  drawRect(WAREHOUSE.xMax-wt, WAREHOUSE.yMin, WAREHOUSE.xMax, WAREHOUSE.yMax, "#3a4260", null);
-
-  // Rack shelving
-  RACKS.forEach(r => {
-    drawRect(r.xMin, r.yMin, r.xMax, r.yMax, "#3d2810", "#5c3d1a", 1.5);
-    // Hatching for shelves (horizontal lines every 4m)
-    ctx.strokeStyle = "#5c3d1a55"; ctx.lineWidth = 1;
-    for (let y = r.yMin+4; y < r.yMax; y += 4) {
-      const [lx,ly] = toCanvas(r.xMin, y);
-      const [rx]    = toCanvas(r.xMax, y);
-      ctx.beginPath(); ctx.moveTo(lx,ly); ctx.lineTo(rx,ly); ctx.stroke();
-    }
-    // Label
-    const [lx,ly] = toCanvas((r.xMin+r.xMax)/2, (r.yMin+r.yMax)/2);
-    ctx.save();
-    ctx.translate(lx,ly); ctx.rotate(-Math.PI/2);
-    ctx.fillStyle = "#8b6030"; ctx.font = "bold 11px system-ui";
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(r.label, 0, 0);
-    ctx.restore();
-  });
-
-  // Columns
-  COLUMNS.forEach(c => {
-    const pw = Math.max(worldToPixel(c.w), 4);
-    const ph = Math.max(worldToPixel(c.h), 4);
-    const [cx,cy] = toCanvas(c.x, c.y);
-    ctx.fillStyle = "#6b7a99";
-    ctx.fillRect(cx-pw/2, cy-ph/2, pw, ph);
-    ctx.strokeStyle = "#8b9ab9"; ctx.lineWidth = 1;
-    ctx.strokeRect(cx-pw/2, cy-ph/2, pw, ph);
-  });
-
-  // Obstacle cubes
-  CUBES.forEach(c => {
-    const ps = Math.max(worldToPixel(c.size), 4);
-    const [cx,cy] = toCanvas(c.x, c.y);
-    ctx.fillStyle = "#c0505088";
-    ctx.fillRect(cx-ps/2, cy-ps/2, ps, ps);
-    ctx.strokeStyle = "#e06060"; ctx.lineWidth = 1.5;
-    ctx.strokeRect(cx-ps/2, cy-ps/2, ps, ps);
-    // Label
-    ctx.fillStyle = "#e8a0a0"; ctx.font = "9px system-ui";
-    ctx.textAlign = "center"; ctx.textBaseline = "bottom";
-    ctx.fillText(c.label, cx, cy - ps/2 - 2);
-  });
-
-  // Path obstacles (cones, boxes & stacks from spawn_path_obstacles.py)
-  PATH_OBSTACLES.forEach(o => {
-    const [cx, cy] = toCanvas(o.x, o.y);
-    if (o.kind === "cone") {
-      // Orange triangle (top-down view of a traffic cone)
-      const r = Math.max(worldToPixel(0.35), 5);
-      ctx.beginPath();
-      ctx.moveTo(cx, cy - r);
-      ctx.lineTo(cx - r * 0.866, cy + r * 0.5);
-      ctx.lineTo(cx + r * 0.866, cy + r * 0.5);
-      ctx.closePath();
-      ctx.fillStyle = "rgba(255,140,0,0.7)";
-      ctx.fill();
-      ctx.strokeStyle = "#ff8c00";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-    } else if (o.kind === "box") {
-      // Brown rectangle (top-down view of a cardboard box)
-      const ps = Math.max(worldToPixel(0.5), 5);
-      ctx.fillStyle = "rgba(140,90,40,0.7)";
-      ctx.fillRect(cx - ps / 2, cy - ps / 2, ps, ps);
-      ctx.strokeStyle = "#a06828";
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(cx - ps / 2, cy - ps / 2, ps, ps);
-    } else if (o.kind === "stack") {
-      // Green-gray square (top-down view of a 4× scaled composite stack: pallet + palette + KLT bins)
-      const ps = Math.max(worldToPixel(1.0), 8);
-      ctx.fillStyle = "rgba(90,140,105,0.6)";
-      ctx.fillRect(cx - ps / 2, cy - ps / 2, ps, ps);
-      ctx.strokeStyle = "#6b9e7f";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(cx - ps / 2, cy - ps / 2, ps, ps);
-    }
-  });
-
-  // Scale bar (bottom-right of warehouse floor area)
-  const barM = 10;  // 10 metre scale bar
-  const barPx = worldToPixel(barM);
-  const bx = W - 30 - barPx;
-  const by = H - 20;
-  ctx.strokeStyle = "#7a8299"; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(bx+barPx,by); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(bx,by-4); ctx.lineTo(bx,by+4); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(bx+barPx,by-4); ctx.lineTo(bx+barPx,by+4); ctx.stroke();
-  ctx.fillStyle = "#7a8299"; ctx.font = "11px system-ui";
-  ctx.textAlign = "center"; ctx.textBaseline = "bottom";
-  ctx.fillText(barM+" m", bx+barPx/2, by-6);
-}
-
-// ── Dynamic overlay ──────────────────────────────────────────────────
-
-function drawDynamic(data) {
-  const sc = worldToPixel(1);
-  const wps = data.waypoints || [];
-
-  // Patrol path dashed loop
-  if (wps.length > 1) {
-    ctx.strokeStyle = "#2e4a60"; ctx.lineWidth = 2; ctx.setLineDash([6,4]);
-    ctx.beginPath();
-    wps.forEach(([wx,wy], i) => {
-      const [px,py] = toCanvas(wx, wy);
-      i === 0 ? ctx.moveTo(px,py) : ctx.lineTo(px,py);
-    });
-    ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
-  }
-
-  // Trail
-  if (trail.length > 1) {
-    ctx.strokeStyle = "#4caf7d55"; ctx.lineWidth = 2;
-    ctx.beginPath();
-    trail.forEach(([tx,ty], i) => {
-      const [cx,cy] = toCanvas(tx,ty);
-      i === 0 ? ctx.moveTo(cx,cy) : ctx.lineTo(cx,cy);
-    });
-    ctx.stroke();
-  }
-
-  // Waypoint markers
-  wps.forEach(([wx,wy], idx) => {
-    const [cx,cy] = toCanvas(wx, wy);
-    const active  = idx === data.wp;
-    ctx.beginPath();
-    ctx.arc(cx, cy, active ? 8 : 5, 0, Math.PI*2);
-    ctx.fillStyle   = active ? "#4a9eff" : "#2e3a50";
-    ctx.strokeStyle = active ? "#4a9eff" : "#3e4f6a";
-    ctx.lineWidth = 2; ctx.fill(); ctx.stroke();
-    ctx.fillStyle = active ? "#fff" : "#7a8299";
-    ctx.font = `bold ${active?11:9}px system-ui`;
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(idx, cx, cy);
-  });
-
-  // Forklift — to-scale rectangle + heading arrow
-  if (data.x == null || data.y == null) return;
-  const [fx, fy] = toCanvas(data.x, data.y);
-  const hdgRad   = (data.heading * Math.PI) / 180;
-  const bW = FL_WIDTH  * sc;
-  const bL = FL_LENGTH * sc;
-
-  ctx.save();
-  ctx.translate(fx, fy);
-  // body +X = cab/counterweight end; body -X = forks/tines end (driving direction).
-  // ctx.rotate(-hdgRad) → local +X = body +X (cab), local -X = body -X (forks).
-  // Canvas Y is flipped (south = canvas +Y), so negating hdgRad is the only correction needed.
-  ctx.rotate(-hdgRad);
-
-  // LIDAR pie chart — 9 sectors showing obstacle detection around forklift
-  {
-    const sl = data.lidar_slices || [false,false,false,false,false,false,false,false,false];
-    const lrF  = worldToPixel(8);  // 8 m front cone range, to scale
-    const lrSB = worldToPixel(4);  // 4 m side/back range (half), to scale
-    const D  = Math.PI / 180;
-    const clr  = "rgba(76,175,125,0.15)";
-    const hitC = "rgba(224,85,85,0.22)";
-    const clrS = "rgba(76,175,125,0.30)";
-    const hitS = "rgba(224,85,85,0.45)";
-    const pie = [
-      // Front 3 slices (full 8 m range)
-      { s: Math.PI-20*D,     e: Math.PI-6.67*D,   h: sl[0], r: lrF  },  // front-left
-      { s: Math.PI-6.67*D,   e: Math.PI+6.67*D,   h: sl[1], r: lrF  },  // front-center
-      { s: Math.PI+6.67*D,   e: Math.PI+20*D,     h: sl[2], r: lrF  },  // front-right
-      // Right 2 slices (half range 4 m)
-      { s: Math.PI+20*D,     e: Math.PI+73.33*D,  h: sl[3], r: lrSB },  // right-front
-      { s: Math.PI+73.33*D,  e: Math.PI+126.67*D, h: sl[4], r: lrSB },  // right-back
-      // Back 2 slices (half range 4 m)
-      { s: Math.PI+126.67*D, e: Math.PI+180*D,    h: sl[5], r: lrSB },  // back-right
-      { s: Math.PI-180*D,    e: Math.PI-126.67*D, h: sl[6], r: lrSB },  // back-left
-      // Left 2 slices (half range 4 m)
-      { s: Math.PI-126.67*D, e: Math.PI-73.33*D,  h: sl[7], r: lrSB },  // left-back
-      { s: Math.PI-73.33*D,  e: Math.PI-20*D,     h: sl[8], r: lrSB },  // left-front
-    ];
-    pie.forEach(p => {
-      ctx.beginPath(); ctx.moveTo(0,0);
-      ctx.arc(0,0,p.r,p.s,p.e); ctx.closePath();
-      ctx.fillStyle = p.h ? hitC : clr; ctx.fill();
-      ctx.strokeStyle = p.h ? hitS : clrS; ctx.lineWidth=1; ctx.stroke();
-    });
-    // Slice divider lines (front-cone boundaries at full range, others at half)
-    [[Math.PI-20*D,lrF], [Math.PI-6.67*D,lrF], [Math.PI+6.67*D,lrF], [Math.PI+20*D,lrF],
-     [Math.PI+73.33*D,lrSB], [Math.PI+126.67*D,lrSB], [Math.PI+180*D,lrSB],
-     [Math.PI-126.67*D,lrSB], [Math.PI-73.33*D,lrSB]].forEach(([a,r]) => {
-      ctx.beginPath(); ctx.moveTo(0,0);
-      ctx.lineTo(Math.cos(a)*r, Math.sin(a)*r);
-      ctx.strokeStyle="rgba(200,200,200,0.18)"; ctx.lineWidth=1; ctx.stroke();
-    });
-  }
-
-  // Shadow
-  ctx.fillStyle = "rgba(0,0,0,0.35)";
-  ctx.fillRect(-bL/2+2, -bW/2+2, bL, bW);
-
-  // Body
-  ctx.fillStyle   = "#c8a832";
-  ctx.strokeStyle = "#f5c842"; ctx.lineWidth = 2;
-  ctx.beginPath();
-  if (ctx.roundRect) ctx.roundRect(-bL/2, -bW/2, bL, bW, 3);
-  else ctx.rect(-bL/2, -bW/2, bL, bW);
-  ctx.fill(); ctx.stroke();
-
-  // Cab / counterweight area (rear 30%) — body +X end = local +X = right side
-  ctx.fillStyle = "#a08520";
-  ctx.fillRect(bL/2 - bL*0.30, -bW/2, bL*0.30, bW);
-
-  // Fork tines — two thin rects extending from forks end (body -X = local -X = left side)
-  const tineL = bL * 0.55, tineW = bW * 0.11, tineGap = bW * 0.22;
-  ctx.fillStyle = "#8b9ab0"; ctx.strokeStyle = "#aabbd0"; ctx.lineWidth = 1;
-  [-tineGap, tineGap].forEach(offset => {
-    ctx.beginPath();
-    ctx.rect(-bL/2 - tineL, offset - tineW/2, tineL, tineW);
-    ctx.fill(); ctx.stroke();
-  });
-
-  // Direction arrow — points forks-forward (local -X = body -X = driving direction)
-  ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-bL/2 - tineL - 5, 0); ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(-bL/2 - tineL - 5, 0); ctx.lineTo(-bL/2 - tineL + 1, -4);
-  ctx.moveTo(-bL/2 - tineL - 5, 0); ctx.lineTo(-bL/2 - tineL + 1, +4);
-  ctx.stroke();
-
-  // Label
-  ctx.fillStyle = "#fff"; ctx.font = "bold 9px system-ui";
-  ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillText("FL", bL*0.10, 0);  // offset toward cab so tines don't overlap
-
-  ctx.restore();
-}
-
-// ── Sidebar updates ──────────────────────────────────────────────────
-
-function updateSidebar(data) {
-  document.getElementById("vX").textContent     = data.x     != null ? data.x.toFixed(1)           + " m" : "--";
-  document.getElementById("vY").textContent     = data.y     != null ? data.y.toFixed(1)           + " m" : "--";
-  document.getElementById("vHdg").textContent   = data.heading    != null ? data.heading.toFixed(1)+ "°"  : "--";
-  document.getElementById("vErr").textContent   = data.heading_err!= null ? (data.heading_err>=0?"+":"")+data.heading_err.toFixed(1)+"°" : "--";
-  document.getElementById("vWp").textContent    = data.wp    != null ? "WP " + data.wp             : "--";
-  document.getElementById("vLap").textContent   = data.lap   != null ? data.lap                    : "--";
-  document.getElementById("vDist").textContent  = data.dist_to_wp != null ? data.dist_to_wp.toFixed(1) + " m" : "--";
-  document.getElementById("vFrame").textContent = data.frame != null ? data.frame                  : "--";
-
-  const ls = data.lidar_state || "CLEAR";
-  const badge = document.getElementById("lidarBadge");
-  badge.textContent = ls; badge.className = "badge " + ls;
-
-  document.getElementById("vFwd").textContent = data.forward_min != null
-    ? (data.forward_min >= 9.8 ? "Clear" : data.forward_min.toFixed(1)+" m") : "--";
-  document.getElementById("vRep").textContent = data.repulsion != null
-    ? (data.repulsion>=0?"+":"")+data.repulsion.toFixed(1)+"°" : "--";
-
-  const sp = Math.round((data.speed_frac || 0) * 100);
-  document.getElementById("vSpeed").textContent   = sp + "%";
-  document.getElementById("speedBar").style.width = sp + "%";
-}
-
-// ── Control buttons ─────────────────────────────────────────────────
-
-let _simPaused = false;
-
-function sendCmd(cmd) {
-  // Toggle: if already paused, send resume instead
-  if (cmd === 'pause' && _simPaused) cmd = 'resume';
-  fetch('/api/cmd/' + cmd, { method: 'POST' })
-    .then(r => r.text())
-    .then(() => {
-      // Optimistic update — flip button immediately, don't wait for state poll
-      if (cmd === 'pause')  updateButtons(true);
-      if (cmd === 'resume') updateButtons(false);
-    })
-    .catch(() => {
-      document.getElementById('cmdStatus').textContent = 'Command failed — is the sim running?';
-    });
-}
-
-function updateButtons(paused) {
-  _simPaused = paused;
-  const btn = document.getElementById('btnPause');
-  if (paused) {
-    btn.textContent = '▶ Resume';
-    btn.className   = 'btn btn-resume';
-  } else {
-    btn.textContent = '⏸ Pause';
-    btn.className   = 'btn btn-pause';
-  }
-}
-
-// ── Main loop ────────────────────────────────────────────────────────
-
-let lastFrame = -1, staleCount = 0;
-
-function resizeCanvas() {
-  const rect = canvas.parentElement.getBoundingClientRect();
-  canvas.width  = Math.floor(rect.width)  || 600;
-  canvas.height = Math.floor(rect.height) - 36 || 400;
-  computeTransform();
-}
-
-function handleData(data) {
-  resizeCanvas();
-  if (data.x != null) { trail.push([data.x, data.y]); if (trail.length > TRAIL_MAX) trail.shift(); }
-  drawScene();
-  drawDynamic(data);
-  updateSidebar(data);
-  updateButtons(data.paused || false);
-  if (data.frame !== lastFrame) { staleCount = 0; lastFrame = data.frame; } else staleCount++;
-  const tag = document.getElementById("liveTag");
-  if (staleCount > 4) { tag.textContent="STALE"; tag.className="pill stale"; }
-  else                { tag.textContent="LIVE";  tag.className="pill"; }
-  document.getElementById("updated").textContent = "Frame " + (data.frame || 0);
-}
-
-// ── WebSocket with auto-reconnect ────────────────────────────────────
-let _lastMsgTime = Date.now();
-
-function connectWS() {
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.onmessage = (e) => { _lastMsgTime = Date.now(); handleData(JSON.parse(e.data)); };
-  ws.onclose   = () => { setTimeout(connectWS, 1000); };
-  ws.onerror   = () => { ws.close(); };
-}
-
-// REST poll fallback — runs every 1 s regardless of WS state.
-// Keeps the dashboard live even when WS is blocked by the tunnel/proxy.
-setInterval(() => {
-  fetch("/api/state", { cache:"no-store" })
-    .then(r => r.json())
-    .then(data => { _lastMsgTime = Date.now(); handleData(data); })
-    .catch(() => {});
-}, 1000);
-
-// Stale guard: if nothing (WS or REST) arrived for 4 s, mark STALE
-setInterval(() => {
-  if (Date.now() - _lastMsgTime > 4000) {
-    const tag = document.getElementById("liveTag");
-    if (tag) { tag.textContent = "STALE"; tag.className = "pill stale"; }
-  }
-}, 1000);
-
-window.addEventListener("resize", resizeCanvas);
-resizeCanvas();
-
-// Draw immediately on load using REST so the map isn't blank before the first WS push
-fetch("/api/state", { cache:"no-store" })
-  .then(r => r.json())
-  .then(handleData)
-  .catch(() => { drawScene(); });  // at minimum paint the warehouse if sim not running
-
-connectWS();
-</script>
-</body>
-</html>"""
+_DASHBOARD_DIR = pathlib.Path(__file__).resolve().parent
+_HTML_FILE = _DASHBOARD_DIR / "index.html"
 
 
 app = FastAPI(title="Forklift Dashboard")
+app.mount("/static", StaticFiles(directory=str(_DASHBOARD_DIR)), name="static")
 
 
 @app.on_event("startup")
@@ -782,7 +101,7 @@ async def _free_port():
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return HTMLResponse(_HTML)
+    return HTMLResponse(_HTML_FILE.read_text(encoding="utf-8"))
 
 
 @app.get("/api/state", response_class=JSONResponse)
@@ -806,6 +125,18 @@ def _post_controller_cmd(action: str, value=None) -> str:
         return f"Error: {exc}"
 
 
+@app.get("/api/controller-alive", response_class=JSONResponse)
+def controller_alive():
+    """Probe the controller HTTP server to see if it's reachable."""
+    try:
+        req = urllib.request.Request("http://localhost:8081/status", method="GET")
+        with urllib.request.urlopen(req, timeout=1):
+            pass
+        return JSONResponse({"alive": True})
+    except Exception:
+        return JSONResponse({"alive": False})
+
+
 @app.post("/api/cmd/pause", response_class=PlainTextResponse)
 def cmd_pause():
     return _post_controller_cmd("pause")
@@ -814,6 +145,21 @@ def cmd_pause():
 @app.post("/api/cmd/resume", response_class=PlainTextResponse)
 def cmd_resume():
     return _post_controller_cmd("resume")
+
+
+@app.post("/api/cmd/reset_location", response_class=PlainTextResponse)
+def cmd_reset_location():
+    return _post_controller_cmd("reset_location")
+
+
+@app.post("/api/cmd/override")
+def cmd_override(body: dict):
+    """Forward an override action (speed, lidar_range, …) to the controller."""
+    action = body.get("action", "")
+    value = body.get("value")
+    if not action:
+        return PlainTextResponse("missing action", status_code=400)
+    return PlainTextResponse(_post_controller_cmd(action, value))
 
 
 @app.websocket("/ws")

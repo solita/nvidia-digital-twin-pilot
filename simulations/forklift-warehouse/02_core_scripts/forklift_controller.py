@@ -26,8 +26,10 @@ Dev owner: Integration / sim lead
 from __future__ import annotations
 
 import asyncio
+import collections
 import importlib.util
 import json
+import math
 import os
 import queue
 import socket
@@ -42,12 +44,17 @@ _BASE = (
 )
 
 def _load(mod_name: str, filename: str):
+    """Force-load a sibling module from source (bypasses stale .pyc)."""
+    import types
     path = f"{_BASE}/{filename}"
     sys.modules.pop(mod_name, None)
-    spec = importlib.util.spec_from_file_location(mod_name, path)
-    mod  = importlib.util.module_from_spec(spec)
+    with open(path) as fh:
+        source = fh.read()
+    code = compile(source, path, "exec")
+    mod = types.ModuleType(mod_name)
+    mod.__file__ = path
     sys.modules[mod_name] = mod
-    spec.loader.exec_module(mod)
+    exec(code, mod.__dict__)
     return mod
 
 config        = _load("fl_config",       "fl_config.py")
@@ -180,6 +187,22 @@ def _start_cmd_server() -> None:
     )
 
 
+# ── Atomic state-file writer ───────────────────────────────────────────────────
+
+def _write_state_atomic(state: dict) -> None:
+    """Write state JSON via tmp + rename so readers never see a truncated file."""
+    tmp = config.STATE_JSON + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(state, f)
+        os.replace(tmp, config.STATE_JSON)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
 # ── Logging helper ─────────────────────────────────────────────────────────────
 
 def _log(level: str, msg: str, diag=None) -> None:
@@ -205,6 +228,53 @@ async def run_forklift() -> None:
     if stage is None:
         carb.log_error("[forklift] No stage loaded — open scene_assembly.usd first.")
         return
+
+    # ── Reset forklift to rest pose ────────────────────────────────────────────
+    timeline = omni.timeline.get_timeline_interface()
+    if timeline.is_playing():
+        timeline.stop()
+        for _ in range(10):
+            await app.next_update_async()
+
+    root_prim = stage.GetPrimAtPath(config.FORKLIFT_ROOT_PRIM)
+    if root_prim.IsValid():
+        xform = UsdGeom.Xformable(root_prim)
+        ops   = {op.GetOpName(): op for op in xform.GetOrderedXformOps()}
+
+        if "xformOp:translate" in ops:
+            ops["xformOp:translate"].Set(Gf.Vec3d(config.REST_X, config.REST_Y, config.REST_Z))
+        else:
+            xform.AddTranslateOp().Set(Gf.Vec3d(config.REST_X, config.REST_Y, config.REST_Z))
+
+        rot  = Gf.Rotation(Gf.Vec3d(0, 0, 1), config.REST_HEADING)
+        q    = rot.GetQuat()
+        gf_q = Gf.Quatf(float(q.GetReal()),
+                         float(q.GetImaginary()[0]),
+                         float(q.GetImaginary()[1]),
+                         float(q.GetImaginary()[2]))
+        if "xformOp:orient" in ops:
+            ops["xformOp:orient"].Set(gf_q)
+        else:
+            xform.AddOrientOp(UsdGeom.XformOp.PrecisionFloat).Set(gf_q)
+
+        carb.log_info(
+            f"[forklift] Reset to ({config.REST_X}, {config.REST_Y}, {config.REST_Z}), "
+            f"heading {config.REST_HEADING}°"
+        )
+
+        # Zero the steer joint so the forklift doesn't start crooked
+        steer_prim = stage.GetPrimAtPath(config.STEER_JOINT_PATH)
+        if steer_prim.IsValid():
+            steer_reset = UsdPhysics.DriveAPI(steer_prim, "angular")
+            steer_reset.GetTargetPositionAttr().Set(0.0)
+            steer_reset.GetStiffnessAttr().Set(3000.0)
+            steer_reset.GetDampingAttr().Set(10000.0)
+    else:
+        carb.log_warn(f"[forklift] Root prim not found for reset: {config.FORKLIFT_ROOT_PRIM!r}")
+
+    # Let the stage commit the new transforms before physics starts
+    for _ in range(10):
+        await app.next_update_async()
 
     # Start HTTP command server (daemon thread, no await needed)
     _start_cmd_server()
@@ -255,6 +325,12 @@ async def run_forklift() -> None:
     frame         = 0
     paused        = False
     speed_override = None   # None = use nav's own speed; 0.0-1.0 = override fraction
+    reset_requested = False
+
+    # ── Status indicator ring buffer (7 s window at assumed 60 Hz) ─────────
+    _status_buf_len = int(config.STATUS_STUCK_SECONDS * config.STATUS_PHYSICS_HZ)
+    _status_buf: collections.deque = collections.deque(maxlen=_status_buf_len)
+    forklift_status = "DRIVING"
 
     while True:
         if not timeline.is_playing():
@@ -274,13 +350,19 @@ async def run_forklift() -> None:
 
             if action == "pause":
                 paused = True
+                forklift_status = "PAUSED"
                 drive_api.GetTargetVelocityAttr().Set(0.0)
                 steer_api.GetTargetPositionAttr().Set(0.0)
                 _live_state["paused"] = True
+                _live_state["forklift_status"] = forklift_status
+                _write_state_atomic(_live_state)
                 _log("info", "PAUSED", diag)
             elif action == "resume":
                 paused = False
+                forklift_status = "DRIVING"
                 _live_state["paused"] = False
+                _live_state["forklift_status"] = forklift_status
+                _status_buf.clear()
                 _log("info", "RESUMED", diag)
             elif action == "speed" and value is not None:
                 try:
@@ -288,15 +370,68 @@ async def run_forklift() -> None:
                     _log("info", f"Speed override: {speed_override:.0%}", diag)
                 except (TypeError, ValueError):
                     pass
+            elif action == "lidar_range" and value is not None:
+                try:
+                    lidar.set_range(float(value))
+                    _log("info", f"LIDAR range → {float(value):.1f} m", diag)
+                except (TypeError, ValueError):
+                    pass
+            elif action == "reset_location":
+                reset_requested = True
+
+        # ── Reset location (needs await — must be outside command loop) ────────
+        if reset_requested:
+            reset_requested = False
+            # Stop physics so the transform actually sticks
+            drive_api.GetTargetVelocityAttr().Set(0.0)
+            steer_api.GetTargetPositionAttr().Set(0.0)
+            timeline.stop()
+            for _ in range(10):
+                await app.next_update_async()
+
+            # Teleport forklift to start pose
+            root_prim = stage.GetPrimAtPath(config.FORKLIFT_ROOT_PRIM)
+            if root_prim.IsValid():
+                xform = UsdGeom.Xformable(root_prim)
+                ops   = {op.GetOpName(): op for op in xform.GetOrderedXformOps()}
+                if "xformOp:translate" in ops:
+                    ops["xformOp:translate"].Set(Gf.Vec3d(config.REST_X, config.REST_Y, config.REST_Z))
+                rot  = Gf.Rotation(Gf.Vec3d(0, 0, 1), config.REST_HEADING)
+                q    = rot.GetQuat()
+                gf_q = Gf.Quatf(float(q.GetReal()),
+                                 float(q.GetImaginary()[0]),
+                                 float(q.GetImaginary()[1]),
+                                 float(q.GetImaginary()[2]))
+                if "xformOp:orient" in ops:
+                    ops["xformOp:orient"].Set(gf_q)
+                # Reset steer joint straight
+                steer_api.GetTargetPositionAttr().Set(0.0)
+                steer_api.GetStiffnessAttr().Set(config.STEER_STIFFNESS_SETTLE)
+
+            for _ in range(10):
+                await app.next_update_async()
+
+            # Restart physics and re-settle
+            timeline.play()
+            for _ in range(config.SETTLE_FRAMES):
+                steer_api.GetTargetPositionAttr().Set(0.0)
+                await app.next_update_async()
+            steer_api.GetStiffnessAttr().Set(config.STEER_STIFFNESS_DRIVE)
+
+            # Reset nav, lidar, counters
+            nav = NavController()
+            lidar.reset_debounce()
+            speed_override = None
+            paused = False
+            frame = 0
+            _status_buf.clear()
+            forklift_status = "DRIVING"
+            _log("info", "RESET LOCATION — teleported to start, nav reset", diag)
+            continue
 
         if paused:
             drive_api.GetTargetVelocityAttr().Set(0.0)
             steer_api.GetTargetPositionAttr().Set(0.0)
-            try:
-                with open(config.STATE_JSON, "w") as _sf:
-                    json.dump(_live_state, _sf)
-            except Exception:
-                pass
             await app.next_update_async()
             continue
 
@@ -319,10 +454,28 @@ async def run_forklift() -> None:
             lidar.reset_debounce()
             _log("warn", f"STUCK — escape at ({fx:.1f},{fy:.1f})", diag)
 
+        # ── Compute forklift status indicator ────────────────────────────────
+        _status_buf.append((fx, fy))
+        if len(_status_buf) >= _status_buf_len:
+            ox, oy = _status_buf[0]
+            max_disp = max(
+                math.hypot(px - ox, py - oy) for px, py in _status_buf
+            )
+            is_stuck = max_disp < config.STATUS_STUCK_RADIUS
+        else:
+            is_stuck = False
+
+        if is_stuck:
+            forklift_status = "STUCK"
+        elif cmd.is_escaping or lidar_result.fwd_stop:
+            forklift_status = "DODGING"
+        else:
+            forklift_status = "DRIVING"
+
         # ── Apply speed override if set ────────────────────────────────────────
         target_vel = cmd.target_velocity
         if speed_override is not None:
-            target_vel = config.DRIVE_VELOCITY * speed_override * (-1 if config.DRIVE_VELOCITY < 0 else 1)
+            target_vel = config.DRIVE_VELOCITY * speed_override
 
         # ── Act ────────────────────────────────────────────────────────────────
         drive_api.GetTargetVelocityAttr().Set(target_vel)
@@ -345,16 +498,14 @@ async def run_forklift() -> None:
                 "repulsion":    round(lidar_result.repulsion_steer, 1),
                 "speed_frac":   round(abs(target_vel / config.DRIVE_VELOCITY), 2),
                 "speed_override": speed_override,
+                "lidar_range":  lidar.max_range,
                 "lidar_slices": lidar_result.lidar_slices,
                 "waypoints":    config.WAYPOINTS,
                 "paused":       paused,
+                "forklift_status": forklift_status,
             }
             # Also write to disk for dashboard fallback / diag
-            try:
-                with open(config.STATE_JSON, "w") as _sf:
-                    json.dump(_live_state, _sf)
-            except Exception:
-                pass
+            _write_state_atomic(_live_state)
 
         # ── Diag log every 60 frames ───────────────────────────────────────────
         if frame % 60 == 0:

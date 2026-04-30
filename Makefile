@@ -1,5 +1,11 @@
-.PHONY: init check-ports dev dash stop help
+.PHONY: init check-ports dev dash dash-restart stop help
 .DEFAULT_GOAL := help
+
+# Isaac Sim image runs as isaac-sim (1234:1234); /isaac-sim is drwxr-x---
+# so the container MUST run with this UID to access the application directory.
+# Host volume-mount dirs should be chowned to 1234 (done by `make init`).
+HOST_UID := 1234
+HOST_GID := 1234
 
 # Ports required for streaming
 STREAMING_PORTS := 49100 47998 8080
@@ -19,16 +25,41 @@ init:
 	@mkdir -p ~/docker/isaac-sim/data/Kit
 	@mkdir -p ~/docker/isaac-sim/logs
 	@mkdir -p ~/docker/isaac-sim/pkg
-	@echo "==> Setting ownership (requires sudo)..."
-	@sudo chown -R 1234:1234 ~/docker/isaac-sim
-	@echo "==> Restoring .git ownership for host user..."
-	@if [ -d ~/docker/isaac-sim/data/nvidia-digital-twin-pilot/.git ]; then \
-		sudo chown -R $$(id -u):$$(id -g) ~/docker/isaac-sim/data/nvidia-digital-twin-pilot/.git; \
-	fi
+	@echo "==> Setting ownership on Isaac Sim volume-mount dirs (UID=$(HOST_UID))..."
+	@sudo chown -R $(HOST_UID):$(HOST_GID) ~/docker/isaac-sim/cache ~/docker/isaac-sim/logs ~/docker/isaac-sim/config ~/docker/isaac-sim/pkg
+	@sudo chown -R $(HOST_UID):$(HOST_GID) ~/docker/isaac-sim/data/Kit ~/docker/isaac-sim/data/documents
+	@sudo chmod 777 ~/docker/isaac-sim/data
+	@echo "==> Ensuring git repo stays accessible to both ubuntu and container..."
+	@sudo chmod -R o+rwX ~/docker/isaac-sim/data/nvidia-digital-twin-pilot 2>/dev/null || true
+	@git config --global --add safe.directory /home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot 2>/dev/null || true
 	@echo "==> Pulling Isaac Sim Docker image (skip if already present)..."
 	@docker pull nvcr.io/nvidia/isaac-sim:5.1.0
 	@echo "==> Installing Python dependencies..."
 	@pip install --quiet fastapi uvicorn
+	@echo "==> Installing Isaac Sim VS Code Edition extension..."
+	@code --install-extension nvidia.isaacsim-vscode-edition --force
+	@echo "==> Enabling isaacsim.code_editor.vscode extension in Isaac Sim (autoload)..."
+	@for profile in "Isaac-Sim Streaming" "Isaac-Sim Full"; do \
+		CFG_DIR=~/docker/isaac-sim/data/Kit/"$$profile"/5.1; \
+		mkdir -p "$$CFG_DIR"; \
+		CFG="$$CFG_DIR/user.config.json"; \
+		if [ -f "$$CFG" ]; then \
+			python3 -c " \
+import json, sys; \
+cfg=json.load(open('$$CFG')); \
+p=cfg.setdefault('persistent',{}); \
+app=p.setdefault('app',{}); \
+exts=app.setdefault('exts',{}); \
+enabled=exts.setdefault('enabled',{}); \
+ext_id='isaacsim.code_editor.vscode-1.1.0'; \
+if ext_id not in enabled.values(): \
+    enabled[str(len(enabled))]=ext_id; \
+json.dump(cfg,open('$$CFG','w'),indent=2)"; \
+		else \
+			echo '{\"persistent\":{\"app\":{\"exts\":{\"enabled\":{\"0\":\"isaacsim.code_editor.vscode-1.1.0\"}}}}}' | python3 -m json.tool > "$$CFG"; \
+		fi; \
+	done
+	@sudo chown -R $(HOST_UID):$(HOST_GID) ~/docker/isaac-sim/data/Kit
 	@echo "==> Checking streaming ports..."
 	@$(MAKE) --no-print-directory check-ports
 	@echo "==> Done. Run 'make dev' to start Isaac Sim."
@@ -88,13 +119,22 @@ dev:
 		-v ~/docker/isaac-sim/config:/isaac-sim/.nvidia-omniverse/config:rw \
 		-v ~/docker/isaac-sim/data:/isaac-sim/.local/share/ov/data:rw \
 		-v ~/docker/isaac-sim/pkg:/isaac-sim/.local/share/ov/pkg:rw \
-		-u 1234:1234 \
+		-u $(HOST_UID):$(HOST_GID) \
 		nvcr.io/nvidia/isaac-sim:5.1.0 \
 		-lc "export LD_LIBRARY_PATH=\$$LD_LIBRARY_PATH:/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib && ./runheadless.sh --/app/livestream/publicEndpointAddress=$$PUBLIC_IP --/app/livestream/port=49100"
 
-## Start the forklift dashboard on port 8080
+## Start the forklift dashboard on port 8080 (auto-reloads on file changes)
 dash:
-	@cd simulations/forklift-warehouse/03_dashboard && python3 -m uvicorn dashboard:app --host 0.0.0.0 --port 8080
+	@cd simulations/forklift-warehouse/03_dashboard && python3 -m uvicorn dashboard:app --host 0.0.0.0 --port 8080 --reload
+
+## Kill running dashboard, clear __pycache__, and restart fresh
+dash-restart:
+	@echo "==> Stopping existing dashboard on port 8080..."
+	@fuser -k 8080/tcp 2>/dev/null || true
+	@echo "==> Clearing Python cache..."
+	@find simulations/forklift-warehouse/03_dashboard -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	@echo "==> Starting dashboard with hot-reload..."
+	@cd simulations/forklift-warehouse/03_dashboard && python3 -m uvicorn dashboard:app --host 0.0.0.0 --port 8080 --reload
 
 ## Stop the Isaac Sim container
 stop:

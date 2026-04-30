@@ -57,11 +57,26 @@ class LidarResult:
 class LidarProcessor:
     """Creates and owns the LIDAR sensor; processes depth data each frame."""
 
+    _ORIG_MAX_RANGE = 8.0  # factory default — used as the scaling baseline
+
+    @property
+    def _no_hit(self) -> float:
+        """Sentinel value meaning 'no real hit' — always above every scaled threshold."""
+        return self.max_range * 1.5
+
     def __init__(self) -> None:
         self._interface          = None
         self._safe_zone: list    = _compute_safe_zone()
         self._debounce_count: int = 0
         self._clear_count: int   = 0
+
+        # Mutable thresholds (initialised from fl_config, scaled by set_range)
+        self.max_range       = self._ORIG_MAX_RANGE
+        self.hard_stop_dist  = LIDAR_HARD_STOP_DIST
+        self.stop_dist       = LIDAR_STOP_DIST
+        self.slow_dist       = LIDAR_SLOW_DIST
+        self.repulse_range   = LIDAR_REPULSE_RANGE
+        self.side_back_range = LIDAR_SIDE_BACK_RANGE
 
     # ── One-time setup ─────────────────────────────────────────────────────────
 
@@ -113,7 +128,7 @@ class LidarProcessor:
         the interface is unavailable, or a read error occurs.
         """
         empty = LidarResult(
-            forward_min=9.9, fwd_stop=False, fwd_slow=False,
+            forward_min=self._no_hit, fwd_stop=False, fwd_slow=False,
             repulsion_steer=0.0, debounce_count=self._debounce_count,
         )
         if not LIDAR_ENABLED or self._interface is None:
@@ -132,6 +147,33 @@ class LidarProcessor:
         self._debounce_count = 0
         self._clear_count    = 0
 
+    # ── Runtime range override ─────────────────────────────────────────────────
+
+    def set_range(self, new_max: float) -> None:
+        """Change LIDAR max range at runtime and scale all detection thresholds."""
+        new_max = max(1.0, min(25.0, float(new_max)))
+        ratio = new_max / self._ORIG_MAX_RANGE
+
+        self.max_range       = new_max
+        self.hard_stop_dist  = LIDAR_HARD_STOP_DIST  * ratio
+        self.stop_dist       = LIDAR_STOP_DIST       * ratio
+        self.slow_dist       = LIDAR_SLOW_DIST       * ratio
+        self.repulse_range   = LIDAR_REPULSE_RANGE   * ratio
+        self.side_back_range = LIDAR_SIDE_BACK_RANGE * ratio
+
+        # Update the USD sensor prim so Isaac Sim respects the new range
+        try:
+            stage = omni.usd.get_context().get_stage()
+            prim = stage.GetPrimAtPath(LIDAR_PRIM_PATH)
+            if prim.IsValid():
+                attr = prim.GetAttribute("maxRange")
+                if attr.IsValid():
+                    attr.Set(new_max)
+            carb.log_info(f"[lidar] Range → {new_max:.1f} m  "
+                          f"(stop={self.stop_dist:.1f}, slow={self.slow_dist:.1f})")
+        except Exception as exc:
+            carb.log_warn(f"[lidar] Failed to update USD maxRange: {exc}")
+
     # ── Internal processing pipeline ───────────────────────────────────────────
 
     def _process_depths(self, depths) -> LidarResult:
@@ -146,7 +188,7 @@ class LidarProcessor:
         # 2. Side/back range cap: halve detection range outside forward cone
         for i in range(n):
             off = ((i - LIDAR_FORWARD_RAY) + 180) % 360 - 180
-            if abs(off) > LIDAR_CONE_HALF and flat[i] > LIDAR_SIDE_BACK_RANGE:
+            if abs(off) > LIDAR_CONE_HALF and flat[i] > self.side_back_range:
                 flat[i] = float('inf')
 
         # 3. Emergency close-range check (bypasses hit-count thresholds)
@@ -154,9 +196,9 @@ class LidarProcessor:
         emerg_hits = [
             flat[i % n]
             for i in range(LIDAR_FORWARD_RAY - 6, LIDAR_FORWARD_RAY + 7)
-            if math.isfinite(flat[i % n]) and 0.3 < flat[i % n] < 2.5
+            if math.isfinite(flat[i % n]) and 0.3 < flat[i % n] < self.hard_stop_dist
         ]
-        forward_min = min(emerg_hits) if len(emerg_hits) >= 2 else 9.9
+        forward_min = min(emerg_hits) if len(emerg_hits) >= 2 else self._no_hit
 
         # 4. Forward cone — two-tier hit-count threshold
         #    Near  0.8–4.5 m: narrow column fills ~5 rays  → threshold = 4
@@ -167,17 +209,17 @@ class LidarProcessor:
                            LIDAR_FORWARD_RAY + LIDAR_CONE_HALF + 1)
             if math.isfinite(flat[i % n])
             and flat[i % n] > LIDAR_MIN_VALID
-            and flat[i % n] < 8.0
+            and flat[i % n] < self.max_range
         ]
-        near_stop = [d for d in fwd_hits if d < min(LIDAR_STOP_DIST, LIDAR_FAR_FLOOR)]
-        far_stop  = [d for d in fwd_hits if LIDAR_FAR_FLOOR <= d < LIDAR_STOP_DIST]
+        near_stop = [d for d in fwd_hits if d < min(self.stop_dist, LIDAR_FAR_FLOOR)]
+        far_stop  = [d for d in fwd_hits if LIDAR_FAR_FLOOR <= d < self.stop_dist]
         if (len(near_stop) >= LIDAR_MIN_HIT_COUNT_NEAR
                 or len(far_stop) >= LIDAR_MIN_HIT_COUNT_FAR):
             if fwd_hits:
                 forward_min = min(forward_min, min(fwd_hits))
 
         # 5. Hysteresis debounce: count up fast, count down only after 5 clear frames
-        if forward_min < LIDAR_STOP_DIST:
+        if forward_min < self.stop_dist:
             self._debounce_count = min(self._debounce_count + 1, LIDAR_DEBOUNCE_FRAMES)
             self._clear_count    = 0
         else:
@@ -186,7 +228,7 @@ class LidarProcessor:
                 self._debounce_count = max(self._debounce_count - 1, 0)
 
         fwd_stop = self._debounce_count >= LIDAR_DEBOUNCE_FRAMES
-        fwd_slow = forward_min < LIDAR_SLOW_DIST
+        fwd_slow = forward_min < self.slow_dist
 
         # 6. APF lateral repulsion
         repulsion = self._compute_repulsion(flat, n)
@@ -209,10 +251,10 @@ class LidarProcessor:
 
     def _compute_repulsion(self, flat: list, n: int) -> float:
         """APF 1/d lateral repulsion: find closest hit per side, compute net push."""
-        left_min = right_min = 9.9
+        left_min = right_min = self._no_hit
         for i in range(n):
             d = flat[i]
-            if not math.isfinite(d) or d > LIDAR_REPULSE_RANGE or d < 0.5:
+            if not math.isfinite(d) or d > self.repulse_range or d < 0.5:
                 continue
             off = ((i - LIDAR_FORWARD_RAY) + 180) % 360 - 180
             if abs(off) < 10 or abs(off) > LIDAR_REPULSE_ARC:
@@ -223,21 +265,22 @@ class LidarProcessor:
                 right_min = min(right_min, d)
             else:
                 left_min  = min(left_min,  d)
-        r_left  = LIDAR_REPULSE_GAIN / left_min  if left_min  < LIDAR_REPULSE_RANGE else 0.0
-        r_right = LIDAR_REPULSE_GAIN / right_min if right_min < LIDAR_REPULSE_RANGE else 0.0
+        r_left  = LIDAR_REPULSE_GAIN / left_min  if left_min  < self.repulse_range and left_min  < self._no_hit else 0.0
+        r_right = LIDAR_REPULSE_GAIN / right_min if right_min < self.repulse_range and right_min < self._no_hit else 0.0
         return max(-STEER_MAX, min(STEER_MAX, r_left - r_right))
 
     def _open_side_scan(self, flat: list, n: int) -> tuple[float, float]:
         """Return (right_min, left_min) in ±25-80° lateral arcs."""
+        no_hit = self._no_hit
         ro_r = min(
             (flat[i % n] for i in range(LIDAR_FORWARD_RAY + 25, LIDAR_FORWARD_RAY + 80)
              if math.isfinite(flat[i % n]) and flat[i % n] >= 0.5),
-            default=9.9,
+            default=no_hit,
         )
         ro_l = min(
             (flat[i % n] for i in range(LIDAR_FORWARD_RAY - 80, LIDAR_FORWARD_RAY - 25)
              if math.isfinite(flat[i % n]) and flat[i % n] >= 0.5),
-            default=9.9,
+            default=no_hit,
         )
         return ro_r, ro_l
 
