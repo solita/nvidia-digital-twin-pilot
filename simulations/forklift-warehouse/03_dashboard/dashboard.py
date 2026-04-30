@@ -147,6 +147,16 @@ def cmd_resume():
     return _post_controller_cmd("resume")
 
 
+@app.post("/api/cmd/override")
+def cmd_override(body: dict):
+    """Forward an override action (speed, lidar_range, …) to the controller."""
+    action = body.get("action", "")
+    value = body.get("value")
+    if not action:
+        return PlainTextResponse("missing action", status_code=400)
+    return PlainTextResponse(_post_controller_cmd(action, value))
+
+
 @app.websocket("/ws")
 async def ws_state(websocket: WebSocket):
     await websocket.accept()

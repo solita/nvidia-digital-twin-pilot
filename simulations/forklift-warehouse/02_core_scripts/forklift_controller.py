@@ -42,12 +42,17 @@ _BASE = (
 )
 
 def _load(mod_name: str, filename: str):
+    """Force-load a sibling module from source (bypasses stale .pyc)."""
+    import types
     path = f"{_BASE}/{filename}"
     sys.modules.pop(mod_name, None)
-    spec = importlib.util.spec_from_file_location(mod_name, path)
-    mod  = importlib.util.module_from_spec(spec)
+    with open(path) as fh:
+        source = fh.read()
+    code = compile(source, path, "exec")
+    mod = types.ModuleType(mod_name)
+    mod.__file__ = path
     sys.modules[mod_name] = mod
-    spec.loader.exec_module(mod)
+    exec(code, mod.__dict__)
     return mod
 
 config        = _load("fl_config",       "fl_config.py")
@@ -222,6 +227,53 @@ async def run_forklift() -> None:
         carb.log_error("[forklift] No stage loaded — open scene_assembly.usd first.")
         return
 
+    # ── Reset forklift to rest pose ────────────────────────────────────────────
+    timeline = omni.timeline.get_timeline_interface()
+    if timeline.is_playing():
+        timeline.stop()
+        for _ in range(10):
+            await app.next_update_async()
+
+    root_prim = stage.GetPrimAtPath(config.FORKLIFT_ROOT_PRIM)
+    if root_prim.IsValid():
+        xform = UsdGeom.Xformable(root_prim)
+        ops   = {op.GetOpName(): op for op in xform.GetOrderedXformOps()}
+
+        if "xformOp:translate" in ops:
+            ops["xformOp:translate"].Set(Gf.Vec3d(config.REST_X, config.REST_Y, config.REST_Z))
+        else:
+            xform.AddTranslateOp().Set(Gf.Vec3d(config.REST_X, config.REST_Y, config.REST_Z))
+
+        rot  = Gf.Rotation(Gf.Vec3d(0, 0, 1), config.REST_HEADING)
+        q    = rot.GetQuat()
+        gf_q = Gf.Quatf(float(q.GetReal()),
+                         float(q.GetImaginary()[0]),
+                         float(q.GetImaginary()[1]),
+                         float(q.GetImaginary()[2]))
+        if "xformOp:orient" in ops:
+            ops["xformOp:orient"].Set(gf_q)
+        else:
+            xform.AddOrientOp(UsdGeom.XformOp.PrecisionFloat).Set(gf_q)
+
+        carb.log_info(
+            f"[forklift] Reset to ({config.REST_X}, {config.REST_Y}, {config.REST_Z}), "
+            f"heading {config.REST_HEADING}°"
+        )
+
+        # Zero the steer joint so the forklift doesn't start crooked
+        steer_prim = stage.GetPrimAtPath(config.STEER_JOINT_PATH)
+        if steer_prim.IsValid():
+            steer_reset = UsdPhysics.DriveAPI(steer_prim, "angular")
+            steer_reset.GetTargetPositionAttr().Set(0.0)
+            steer_reset.GetStiffnessAttr().Set(3000.0)
+            steer_reset.GetDampingAttr().Set(10000.0)
+    else:
+        carb.log_warn(f"[forklift] Root prim not found for reset: {config.FORKLIFT_ROOT_PRIM!r}")
+
+    # Let the stage commit the new transforms before physics starts
+    for _ in range(10):
+        await app.next_update_async()
+
     # Start HTTP command server (daemon thread, no await needed)
     _start_cmd_server()
 
@@ -305,6 +357,12 @@ async def run_forklift() -> None:
                     _log("info", f"Speed override: {speed_override:.0%}", diag)
                 except (TypeError, ValueError):
                     pass
+            elif action == "lidar_range" and value is not None:
+                try:
+                    lidar.set_range(float(value))
+                    _log("info", f"LIDAR range → {float(value):.1f} m", diag)
+                except (TypeError, ValueError):
+                    pass
 
         if paused:
             drive_api.GetTargetVelocityAttr().Set(0.0)
@@ -357,6 +415,7 @@ async def run_forklift() -> None:
                 "repulsion":    round(lidar_result.repulsion_steer, 1),
                 "speed_frac":   round(abs(target_vel / config.DRIVE_VELOCITY), 2),
                 "speed_override": speed_override,
+                "lidar_range":  lidar.max_range,
                 "lidar_slices": lidar_result.lidar_slices,
                 "waypoints":    config.WAYPOINTS,
                 "paused":       paused,

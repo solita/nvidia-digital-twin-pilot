@@ -375,3 +375,90 @@ canvas#map {
 .btn-stop:hover {
     background: #c94444;
 }
+
+/* ── Fleet card overrides dropdown ───────────────────────── */
+
+.fleet-overrides {
+    margin-top: 10px;
+}
+
+.fleet-overrides>summary {
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+    margin-bottom: 0;
+}
+
+.fleet-overrides>summary::-webkit-details-marker {
+    display: none;
+}
+
+.fleet-overrides>summary::before {
+    content: '▸ ';
+    font-size: 0.7rem;
+    color: var(--muted);
+}
+
+.fleet-overrides[open]>summary::before {
+    content: '▾ ';
+}
+
+.fleet-overrides[open]>summary {
+    margin-bottom: 8px;
+}
+
+.override-row {
+    display: grid;
+    grid-template-columns: 80px 1fr 48px;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.override-row:last-child {
+    margin-bottom: 0;
+}
+
+.override-label {
+    font-size: 0.68rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+}
+
+.override-val {
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-align: right;
+}
+
+.override-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    outline: none;
+    cursor: pointer;
+}
+
+.override-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--blue);
+    cursor: pointer;
+    border: 2px solid var(--card);
+}
+
+.override-slider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--blue);
+    cursor: pointer;
+    border: 2px solid var(--card);
+}

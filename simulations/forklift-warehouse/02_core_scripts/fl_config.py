@@ -120,3 +120,12 @@ STATE_JSON = f"{_OUT}/forklift_state.json"
 # reachable from the host without any docker port mapping changes.
 
 CMD_SERVER_PORT = 8081
+
+# ── Forklift rest / spawn pose ─────────────────────────────────────────────────
+# Where the forklift is placed before each controller run.
+# X=-15: open centre-west area between columns at X=-27 and X=-4.
+FORKLIFT_ROOT_PRIM = "/World/forklift_b"
+REST_X       = -15.0
+REST_Y       = -17.5
+REST_Z       =   0.0
+REST_HEADING =  90.0   # forks-forward: local -X points south toward WP0

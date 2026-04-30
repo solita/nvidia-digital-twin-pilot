@@ -331,8 +331,9 @@ function drawDynamic(data) {
     // LIDAR pie chart — 9 sectors showing obstacle detection around forklift
     {
         const sl = data.lidar_slices || [false, false, false, false, false, false, false, false, false];
-        const lrF = worldToPixel(8);  // 8 m front cone range, to scale
-        const lrSB = worldToPixel(4);  // 4 m side/back range (half), to scale
+        const lr = data.lidar_range || 8;   // live range from controller state
+        const lrF = worldToPixel(lr);       // front cone range, to scale
+        const lrSB = worldToPixel(lr / 2);  // side/back range (half), to scale
         const D = Math.PI / 180;
         const clr = "rgba(76,175,125,0.15)";
         const hitC = "rgba(224,85,85,0.22)";
@@ -469,12 +470,46 @@ function buildFleetCard(idx) {
                 <button class="btn btn-resume" data-fld="btnResume">▶ Resume</button>
             </div>
             <div data-fld="cmdStatus" style="font-size:0.72rem;color:var(--muted);margin-top:6px"></div>
-        </div>`;
+        </div>
+        <details class="fleet-overrides">
+            <summary class="fleet-section-title">Overrides</summary>
+            <div class="override-row">
+                <label class="override-label">Speed</label>
+                <input type="range" class="override-slider" min="0" max="100" step="1" value="100" data-fld="speedSlider">
+                <span class="override-val" data-fld="speedSliderVal">100%</span>
+            </div>
+            <div class="override-row">
+                <label class="override-label">LIDAR Range</label>
+                <input type="range" class="override-slider" min="1" max="25" step="0.5" value="8" data-fld="lidarSlider">
+                <span class="override-val" data-fld="lidarSliderVal">8.0 m</span>
+            </div>
+        </details>`;
     // Bind control buttons
     const btnStop = card.querySelector('[data-fld="btnStop"]');
     const btnResume = card.querySelector('[data-fld="btnResume"]');
     btnStop.addEventListener('click', () => sendCmd('pause', idx));
     btnResume.addEventListener('click', () => sendCmd('resume', idx));
+
+    // Bind override sliders (debounced 200 ms)
+    const speedSlider = card.querySelector('[data-fld="speedSlider"]');
+    const lidarSlider = card.querySelector('[data-fld="lidarSlider"]');
+    let _speedTimer = 0, _lidarTimer = 0;
+
+    speedSlider.addEventListener('input', () => {
+        fld(card, 'speedSliderVal').textContent = speedSlider.value + '%';
+        clearTimeout(_speedTimer);
+        _speedTimer = setTimeout(() => {
+            sendOverride('speed', parseFloat(speedSlider.value) / 100, idx);
+        }, 200);
+    });
+
+    lidarSlider.addEventListener('input', () => {
+        fld(card, 'lidarSliderVal').textContent = parseFloat(lidarSlider.value).toFixed(1) + ' m';
+        clearTimeout(_lidarTimer);
+        _lidarTimer = setTimeout(() => {
+            sendOverride('lidar_range', parseFloat(lidarSlider.value), idx);
+        }, 200);
+    });
     return card;
 }
 
@@ -514,6 +549,18 @@ function updateFleetCard(card, data) {
     const btnResume = fld(card, 'btnResume');
     btnStop.disabled = !_controllerAlive || paused;
     btnResume.disabled = !_controllerAlive || !paused;
+
+    // Sync override sliders (skip if user is actively dragging)
+    const speedSlider = card.querySelector('[data-fld="speedSlider"]');
+    const lidarSlider = card.querySelector('[data-fld="lidarSlider"]');
+    if (speedSlider && document.activeElement !== speedSlider && data.speed_override != null) {
+        speedSlider.value = Math.round(data.speed_override * 100);
+        fld(card, 'speedSliderVal').textContent = speedSlider.value + '%';
+    }
+    if (lidarSlider && document.activeElement !== lidarSlider && data.lidar_range != null) {
+        lidarSlider.value = data.lidar_range;
+        fld(card, 'lidarSliderVal').textContent = parseFloat(data.lidar_range).toFixed(1) + ' m';
+    }
 }
 
 function updateFleetTab(data) {
@@ -564,6 +611,19 @@ function sendCmd(cmd, fleetIdx) {
                 fld(_fleetCards[fleetIdx], 'cmdStatus').textContent = 'Command failed — is the sim running?';
             }
         });
+}
+
+function sendOverride(action, value, fleetIdx) {
+    if (!_controllerAlive) return;
+    fetch('/api/cmd/override', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, value }),
+    }).catch(() => {
+        if (_fleetCards[fleetIdx]) {
+            fld(_fleetCards[fleetIdx], 'cmdStatus').textContent = 'Override failed — is the sim running?';
+        }
+    });
 }
 
 // Poll controller liveness every 3 s and enable/disable buttons
