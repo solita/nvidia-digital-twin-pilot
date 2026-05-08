@@ -671,6 +671,96 @@ function pollControllerAlive() {
 pollControllerAlive();
 setInterval(pollControllerAlive, 3000);
 
+// ── Obstacles tab ────────────────────────────────────────────────────
+
+const OBS_DEFAULTS = {
+    randomness: 30,
+    assets: {
+        cone: { weight: 5, density: 4, size: 1.0 },
+        box: { weight: 20, density: 4, size: 1.0 },
+        pallet: { weight: 200, density: 2, size: 1.0 },
+        pushcart: { weight: 80, density: 2, size: 1.0 },
+    }
+};
+
+function getObstacleParams() {
+    const randomness = parseInt(document.getElementById('obsRandomness').value, 10);
+    const assets = {};
+    document.querySelectorAll('.obs-asset-section').forEach(section => {
+        const kind = section.dataset.asset;
+        assets[kind] = {
+            weight: parseInt(section.querySelector('[data-param="weight"]').value, 10),
+            density: parseInt(section.querySelector('[data-param="density"]').value, 10),
+            size: parseFloat(section.querySelector('[data-param="size"]').value),
+        };
+    });
+    return { randomness, assets };
+}
+
+function setObstacleParams(params) {
+    const rSlider = document.getElementById('obsRandomness');
+    rSlider.value = params.randomness;
+    document.getElementById('obsRandomnessVal').textContent = params.randomness + '%';
+    document.querySelectorAll('.obs-asset-section').forEach(section => {
+        const kind = section.dataset.asset;
+        const cfg = params.assets[kind];
+        if (!cfg) return;
+        const wSlider = section.querySelector('[data-param="weight"]');
+        const dSlider = section.querySelector('[data-param="density"]');
+        const sSlider = section.querySelector('[data-param="size"]');
+        wSlider.value = cfg.weight;
+        section.querySelector('[data-val="weight"]').textContent = cfg.weight + ' kg';
+        dSlider.value = cfg.density;
+        section.querySelector('[data-val="density"]').textContent = cfg.density;
+        sSlider.value = cfg.size;
+        section.querySelector('[data-val="size"]').textContent = cfg.size.toFixed(1) + 'x';
+    });
+}
+
+// Wire up slider live value displays
+document.getElementById('obsRandomness').addEventListener('input', function () {
+    document.getElementById('obsRandomnessVal').textContent = this.value + '%';
+});
+
+document.querySelectorAll('.obs-asset-section').forEach(section => {
+    section.querySelector('[data-param="weight"]').addEventListener('input', function () {
+        section.querySelector('[data-val="weight"]').textContent = this.value + ' kg';
+    });
+    section.querySelector('[data-param="density"]').addEventListener('input', function () {
+        section.querySelector('[data-val="density"]').textContent = this.value;
+    });
+    section.querySelector('[data-param="size"]').addEventListener('input', function () {
+        section.querySelector('[data-val="size"]').textContent = parseFloat(this.value).toFixed(1) + 'x';
+    });
+});
+
+// Generate button
+document.getElementById('obsGenerate').addEventListener('click', () => {
+    const params = getObstacleParams();
+    const statusEl = document.getElementById('obsCmdStatus');
+    statusEl.textContent = 'Generating obstacles…';
+    fetch('/api/obstacles/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+    })
+        .then(r => r.json())
+        .then(d => {
+            statusEl.textContent = d.status || 'Done';
+            setTimeout(() => { statusEl.textContent = ''; }, 4000);
+        })
+        .catch(() => {
+            statusEl.textContent = 'Generate failed — is the sim running?';
+        });
+});
+
+// Default button
+document.getElementById('obsDefault').addEventListener('click', () => {
+    setObstacleParams(OBS_DEFAULTS);
+    document.getElementById('obsCmdStatus').textContent = 'Reset to defaults';
+    setTimeout(() => { document.getElementById('obsCmdStatus').textContent = ''; }, 2000);
+});
+
 // ── Main loop ────────────────────────────────────────────────────────
 
 let lastFrame = -1, staleCount = 0;

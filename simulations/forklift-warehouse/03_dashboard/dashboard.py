@@ -19,8 +19,6 @@ import asyncio
 import json
 import os
 import pathlib
-import signal
-import subprocess
 import urllib.request
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -28,24 +26,6 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.staticfiles import StaticFiles
 
 PORT = 8080
-
-
-def _kill_existing_port_user() -> None:
-    """Kill any process already bound to PORT so uvicorn can start cleanly."""
-    try:
-        out = subprocess.check_output(
-            ["fuser", f"{PORT}/tcp"], stderr=subprocess.DEVNULL
-        ).decode().split()
-        my_pid = os.getpid()
-        for tok in out:
-            pid = int(tok)
-            if pid != my_pid:
-                os.kill(pid, signal.SIGKILL)
-    except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
-        pass
-
-
-_kill_existing_port_user()
 
 STATE_FILE = (
     "/home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot/"
@@ -94,12 +74,8 @@ app = FastAPI(title="Forklift Dashboard")
 app.mount("/static", StaticFiles(directory=str(_DASHBOARD_DIR)), name="static")
 
 
-@app.on_event("startup")
-async def _free_port():
-    _kill_existing_port_user()
-
-
 @app.get("/", response_class=HTMLResponse)
+@app.head("/", response_class=HTMLResponse)
 def index():
     return HTMLResponse(_HTML_FILE.read_text(encoding="utf-8"))
 
@@ -187,6 +163,34 @@ def cmd_override(body: dict):
     if not action:
         return PlainTextResponse("missing action", status_code=400)
     return PlainTextResponse(_post_controller_cmd(action, value))
+
+
+# ── Obstacles generation endpoint ──────────────────────────────────────────────
+_SPAWN_SCRIPT = (
+    "/home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot/"
+    "simulations/forklift-warehouse/04_helper_scripts/spawn_path_obstacles.py"
+)
+_OBSTACLE_CONFIG_FILE = (
+    "/home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot/"
+    "simulations/forklift-warehouse/04_current_outputs/obstacle_config.json"
+)
+
+
+@app.post("/api/obstacles/generate", response_class=JSONResponse)
+def generate_obstacles(body: dict):
+    """Write obstacle config and trigger spawn_path_obstacles via the controller."""
+    randomness = body.get("randomness", 30)
+    assets = body.get("assets", {})
+    config = {"randomness": randomness, "assets": assets}
+    # Persist config so spawn script can read it
+    try:
+        with open(_OBSTACLE_CONFIG_FILE, "w", encoding="utf-8") as fh:
+            json.dump(config, fh, indent=2)
+    except Exception as exc:
+        return JSONResponse({"status": f"Error writing config: {exc}"}, status_code=500)
+    # Forward to controller to run the spawn script in Isaac Sim context
+    result = _post_controller_cmd("run_script", _SPAWN_SCRIPT)
+    return JSONResponse({"status": f"Sent to controller: {result}"})
 
 
 @app.websocket("/ws")

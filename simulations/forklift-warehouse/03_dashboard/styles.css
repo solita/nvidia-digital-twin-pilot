@@ -491,3 +491,90 @@ canvas#map {
     cursor: pointer;
     border: 2px solid var(--card);
 }
+
+/* ── Obstacles tab ───────────────────────────────────────── */
+
+.obs-btn-bar {
+    display: flex;
+    gap: 10px;
+}
+
+.btn-generate {
+    background: var(--green);
+    color: #000;
+}
+
+.btn-generate:hover {
+    background: #3da06a;
+}
+
+.btn-default {
+    background: var(--border);
+    color: var(--ink);
+}
+
+.btn-default:hover {
+    background: #3a4565;
+}
+
+.obs-slider-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.obs-slider-row .override-slider {
+    flex: 1;
+}
+
+.obs-asset-section {
+    margin-top: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.obs-asset-section+.obs-asset-section {
+    margin-top: 8px;
+}
+
+.obs-asset-header {
+    cursor: pointer;
+    user-select: none;
+    padding: 10px 12px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--ink);
+    background: rgba(74, 158, 255, 0.04);
+    list-style: none;
+}
+
+.obs-asset-header::-webkit-details-marker {
+    display: none;
+}
+
+.obs-asset-header::before {
+    content: '▸ ';
+    font-size: 0.7rem;
+    color: var(--muted);
+}
+
+.obs-asset-section[open]>.obs-asset-header::before {
+    content: '▾ ';
+}
+
+.obs-asset-section[open]>.obs-asset-header {
+    border-bottom: 1px solid var(--border);
+}
+
+.obs-asset-controls {
+    padding: 10px 12px;
+}
+
+.obs-asset-controls .override-row {
+    margin-bottom: 10px;
+}
+
+.obs-asset-controls .override-row:last-child {
+    margin-bottom: 0;
+}

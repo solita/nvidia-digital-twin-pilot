@@ -123,9 +123,10 @@ dev:
 		nvcr.io/nvidia/isaac-sim:5.1.0 \
 		-lc "export LD_LIBRARY_PATH=\$$LD_LIBRARY_PATH:/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib && ./runheadless.sh --/app/livestream/publicEndpointAddress=$$PUBLIC_IP --/app/livestream/port=49100"
 
-## Start the forklift dashboard on port 8080 (auto-reloads on file changes)
+## Start the forklift dashboard on port 8080
 dash:
-	@cd simulations/forklift-warehouse/03_dashboard && python3 -m uvicorn dashboard:app --host 0.0.0.0 --port 8080 --reload
+	@fuser -k 8080/tcp 2>/dev/null || true
+	@cd simulations/forklift-warehouse/03_dashboard && python3 -m uvicorn dashboard:app --host 0.0.0.0 --port 8080
 
 ## Kill running dashboard, clear __pycache__, and restart fresh
 dash-restart:
@@ -133,8 +134,8 @@ dash-restart:
 	@fuser -k 8080/tcp 2>/dev/null || true
 	@echo "==> Clearing Python cache..."
 	@find simulations/forklift-warehouse/03_dashboard -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	@echo "==> Starting dashboard with hot-reload..."
-	@cd simulations/forklift-warehouse/03_dashboard && python3 -m uvicorn dashboard:app --host 0.0.0.0 --port 8080 --reload
+	@echo "==> Starting dashboard..."
+	@cd simulations/forklift-warehouse/03_dashboard && python3 -m uvicorn dashboard:app --host 0.0.0.0 --port 8080
 
 ## Stop the Isaac Sim container
 stop:

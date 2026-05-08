@@ -38,6 +38,7 @@
             General
           </button>
           <button class="sidebar-tab" data-tab="tabFleet">Fleet</button>
+          <button class="sidebar-tab" data-tab="tabObstacles">Obstacles</button>
         </nav>
 
         <!-- ── General tab ──────────────────────────────────── -->
@@ -133,6 +134,62 @@
         <!-- ── Fleet tab ────────────────────────────────────── -->
         <div class="tab-panel" id="tabFleet">
           <div id="fleetCards"></div>
+        </div>
+
+        <!-- ── Obstacles tab ────────────────────────────────── -->
+        <div class="tab-panel" id="tabObstacles">
+          <div class="card">
+            <div class="obs-btn-bar">
+              <button class="btn btn-generate" id="obsGenerate">Generate</button>
+              <button class="btn btn-default" id="obsDefault">Default</button>
+            </div>
+            <div id="obsCmdStatus" style="font-size:0.72rem;color:var(--muted);margin-top:8px"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">Randomness</div>
+            <div class="obs-slider-row">
+              <input type="range" class="override-slider" id="obsRandomness" min="0" max="100" step="1" value="30">
+              <span class="override-val" id="obsRandomnessVal">30%</span>
+            </div>
+            <div style="font-size:0.68rem;color:var(--muted);margin-top:4px">
+              Low = clear path &nbsp;|&nbsp; High = obstacles block path
+            </div>
+          </div>
+          <div class="card" id="obsAssetTypes">
+            <div class="card-title">Asset Types</div>
+            <details class="obs-asset-section" data-asset="cone" open>
+              <summary class="obs-asset-header">Traffic Cone</summary>
+              <div class="obs-asset-controls">
+                <div class="override-row"><label class="override-label">Weight</label><input type="range" class="override-slider" data-param="weight" min="0" max="1000" step="1" value="5"><span class="override-val" data-val="weight">5 kg</span></div>
+                <div class="override-row"><label class="override-label">Density</label><input type="range" class="override-slider" data-param="density" min="1" max="20" step="1" value="4"><span class="override-val" data-val="density">4</span></div>
+                <div class="override-row"><label class="override-label">Size</label><input type="range" class="override-slider" data-param="size" min="1" max="3" step="0.1" value="1"><span class="override-val" data-val="size">1.0x</span></div>
+              </div>
+            </details>
+            <details class="obs-asset-section" data-asset="box">
+              <summary class="obs-asset-header">Cardboard Box</summary>
+              <div class="obs-asset-controls">
+                <div class="override-row"><label class="override-label">Weight</label><input type="range" class="override-slider" data-param="weight" min="0" max="1000" step="1" value="20"><span class="override-val" data-val="weight">20 kg</span></div>
+                <div class="override-row"><label class="override-label">Density</label><input type="range" class="override-slider" data-param="density" min="1" max="20" step="1" value="4"><span class="override-val" data-val="density">4</span></div>
+                <div class="override-row"><label class="override-label">Size</label><input type="range" class="override-slider" data-param="size" min="1" max="3" step="0.1" value="1"><span class="override-val" data-val="size">1.0x</span></div>
+              </div>
+            </details>
+            <details class="obs-asset-section" data-asset="pallet">
+              <summary class="obs-asset-header">Pallet Composite</summary>
+              <div class="obs-asset-controls">
+                <div class="override-row"><label class="override-label">Weight</label><input type="range" class="override-slider" data-param="weight" min="0" max="1000" step="1" value="200"><span class="override-val" data-val="weight">200 kg</span></div>
+                <div class="override-row"><label class="override-label">Density</label><input type="range" class="override-slider" data-param="density" min="1" max="20" step="1" value="2"><span class="override-val" data-val="density">2</span></div>
+                <div class="override-row"><label class="override-label">Size</label><input type="range" class="override-slider" data-param="size" min="1" max="3" step="0.1" value="1"><span class="override-val" data-val="size">1.0x</span></div>
+              </div>
+            </details>
+            <details class="obs-asset-section" data-asset="pushcart">
+              <summary class="obs-asset-header">Pushcart Stack</summary>
+              <div class="obs-asset-controls">
+                <div class="override-row"><label class="override-label">Weight</label><input type="range" class="override-slider" data-param="weight" min="0" max="1000" step="1" value="80"><span class="override-val" data-val="weight">80 kg</span></div>
+                <div class="override-row"><label class="override-label">Density</label><input type="range" class="override-slider" data-param="density" min="1" max="20" step="1" value="2"><span class="override-val" data-val="density">2</span></div>
+                <div class="override-row"><label class="override-label">Size</label><input type="range" class="override-slider" data-param="size" min="1" max="3" step="0.1" value="1"><span class="override-val" data-val="size">1.0x</span></div>
+              </div>
+            </details>
+          </div>
         </div>
 
         <div class="footnote" id="updated">Waiting for simulation data...</div>
