@@ -1,77 +1,143 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Forklift Dashboard</title>
-<link rel="stylesheet" href="/static/styles.css">
-</head>
-<body>
-<header>
-  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-    <rect x="1" y="3" width="15" height="13" rx="1"/>
-    <path d="M16 8h5l2 3v4h-7V8z"/>
-    <circle cx="5.5" cy="18.5" r="2.5"/>
-    <circle cx="18.5" cy="18.5" r="2.5"/>
-  </svg>
-  <h1>Forklift Warehouse — Top-Down View</h1>
-  <span class="pill" id="liveTag">LIVE</span>
-</header>
-<div class="layout">
-  <div class="map-wrap">
-    <div class="map-title">scene_assembly.usd — All assets to scale (1 grid = 10 m) &nbsp;|&nbsp; X → east, Y ↑ north</div>
-    <canvas id="map"></canvas>
-  </div>
-  <div class="sidebar">
-    <nav class="sidebar-nav">
-      <button class="sidebar-tab active" data-tab="tabGeneral">General</button>
-      <button class="sidebar-tab" data-tab="tabFleet">Fleet</button>
-    </nav>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Forklift Dashboard</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header>
+      <svg
+        width="22"
+        height="22"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+      >
+        <rect x="1" y="3" width="15" height="13" rx="1" />
+        <path d="M16 8h5l2 3v4h-7V8z" />
+        <circle cx="5.5" cy="18.5" r="2.5" />
+        <circle cx="18.5" cy="18.5" r="2.5" />
+      </svg>
+      <h1>Forklift Warehouse — Top-Down View</h1>
+      <span class="pill" id="liveTag">LIVE</span>
+    </header>
+    <div class="layout">
+      <div class="map-wrap">
+        <div class="map-title">
+          scene_assembly.usd — All assets to scale (1 grid = 10 m) &nbsp;|&nbsp;
+          X → east, Y ↑ north
+        </div>
+        <canvas id="map"></canvas>
+      </div>
+      <div class="sidebar">
+        <nav class="sidebar-nav">
+          <button class="sidebar-tab active" data-tab="tabGeneral">
+            General
+          </button>
+          <button class="sidebar-tab" data-tab="tabFleet">Fleet</button>
+        </nav>
 
-    <!-- ── General tab ──────────────────────────────────── -->
-    <div class="tab-panel active" id="tabGeneral">
-      <div class="card">
-        <div class="card-title">Scene Assets</div>
-        <div style="font-size:0.75rem; color:var(--muted); line-height:1.6">
-          <div>/World/warehouse <span style="color:#5c8a5c">(payload)</span></div>
-          <div>/World/forklift_b <span style="color:#5c8a5c">(payload)</span></div>
-          <div>/World/Cube .. Cube_06 <span style="color:#c05050">×6 obstacles</span></div>
-          <div>/World/Obstacles <span style="color:#ff8c00">×16 path obstacles</span></div>
-          <div>/World/PhysicsScene</div>
-          <div>/World/PhysicsGround <span style="color:#555">(invisible)</span></div>
+        <!-- ── General tab ──────────────────────────────────── -->
+        <div class="tab-panel active" id="tabGeneral">
+          <div class="card">
+            <div class="card-title">Scene Assets</div>
+            <div
+              style="font-size: 0.75rem; color: var(--muted); line-height: 1.6"
+            >
+              <div>
+                /World/warehouse <span style="color: #5c8a5c">(payload)</span>
+              </div>
+              <div>
+                /World/forklift_b <span style="color: #5c8a5c">(payload)</span>
+              </div>
+              <div>
+                /World/Cube .. Cube_06
+                <span style="color: #c05050">×6 obstacles</span>
+              </div>
+              <div>
+                /World/Obstacles
+                <span style="color: #ff8c00">path obstacles (live)</span>
+              </div>
+              <div>/World/PhysicsScene</div>
+              <div>
+                /World/PhysicsGround
+                <span style="color: #555">(invisible)</span>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">Legend</div>
+            <div class="legend-list">
+              <div class="legend-item">
+                <span class="legend-swatch" style="background: #1e2433"></span
+                >Warehouse floor
+              </div>
+              <div class="legend-item">
+                <span class="legend-swatch" style="background: #3a4260"></span
+                >Walls
+              </div>
+              <div class="legend-item">
+                <span class="legend-swatch" style="background: #5c3d1a"></span
+                >Rack shelving
+              </div>
+
+              <div class="legend-item">
+                <span class="legend-swatch" style="background: #c05050"></span
+                >Obstacle cubes
+              </div>
+              <div class="legend-item">
+                <span class="legend-swatch" style="background: #ff8c00"></span
+                >Traffic cones
+              </div>
+              <div class="legend-item">
+                <span class="legend-swatch" style="background: #8c5a28"></span
+                >Cardboard boxes
+              </div>
+              <div class="legend-item">
+                <span class="legend-swatch" style="background: #5a8c6b"></span
+                >Pallet composites
+              </div>
+              <div class="legend-item">
+                <span class="legend-swatch" style="background: #5f7387"></span
+                >Pushcart stacks
+              </div>
+              <div class="legend-item">
+                <span class="legend-swatch" style="background: #f5c842"></span
+                >Forklift body
+              </div>
+              <div class="legend-item">
+                <span class="legend-swatch" style="background: #8b9ab0"></span
+                >Fork tines
+              </div>
+              <div class="legend-item">
+                <span class="legend-swatch" style="background: #4a9eff"></span
+                >Waypoints
+              </div>
+              <div class="legend-item">
+                <span class="legend-swatch" style="background: #4caf7d"></span
+                >Trail
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">Fleet Summary</div>
+            <div class="val" id="fleetCount" style="font-size: 1.1rem">
+              Forklifts in scene: <span id="fleetNum">--</span>
+            </div>
+          </div>
         </div>
-      </div>
-      <div class="card">
-        <div class="card-title">Legend</div>
-        <div class="legend-list">
-          <div class="legend-item"><span class="legend-swatch" style="background:#1e2433"></span>Warehouse floor</div>
-          <div class="legend-item"><span class="legend-swatch" style="background:#3a4260"></span>Walls</div>
-          <div class="legend-item"><span class="legend-swatch" style="background:#5c3d1a"></span>Rack shelving</div>
-          <div class="legend-item"><span class="legend-swatch" style="background:#6b7a99"></span>Columns</div>
-          <div class="legend-item"><span class="legend-swatch" style="background:#c05050"></span>Obstacle cubes</div>
-          <div class="legend-item"><span class="legend-swatch" style="background:#ff8c00"></span>Traffic cones</div>
-          <div class="legend-item"><span class="legend-swatch" style="background:#8c5a28"></span>Cardboard boxes</div>
-          <div class="legend-item"><span class="legend-swatch" style="background:#5a8c6b"></span>Stack composites</div>
-          <div class="legend-item"><span class="legend-swatch" style="background:#f5c842"></span>Forklift body</div>
-          <div class="legend-item"><span class="legend-swatch" style="background:#8b9ab0"></span>Fork tines</div>
-          <div class="legend-item"><span class="legend-swatch" style="background:#4a9eff"></span>Waypoints</div>
-          <div class="legend-item"><span class="legend-swatch" style="background:#4caf7d"></span>Trail</div>
+
+        <!-- ── Fleet tab ────────────────────────────────────── -->
+        <div class="tab-panel" id="tabFleet">
+          <div id="fleetCards"></div>
         </div>
-      </div>
-      <div class="card">
-        <div class="card-title">Fleet Summary</div>
-        <div class="val" id="fleetCount" style="font-size:1.1rem">Forklifts in scene: <span id="fleetNum">--</span></div>
+
+        <div class="footnote" id="updated">Waiting for simulation data...</div>
       </div>
     </div>
-
-    <!-- ── Fleet tab ────────────────────────────────────── -->
-    <div class="tab-panel" id="tabFleet">
-      <div id="fleetCards"></div>
-    </div>
-
-    <div class="footnote" id="updated">Waiting for simulation data...</div>
-  </div>
-</div>
-<script src="/static/dashboard.js"></script>
-</body>
+    <script src="/static/dashboard.js"></script>
+  </body>
 </html>

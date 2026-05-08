@@ -104,6 +104,33 @@ def index():
     return HTMLResponse(_HTML_FILE.read_text(encoding="utf-8"))
 
 
+# ── Path-obstacle manifest (written by spawn_path_obstacles.py) ────────────────
+_OBSTACLES_FILE = (
+    "/home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot/"
+    "simulations/forklift-warehouse/04_current_outputs/path_obstacles.json"
+)
+_cached_obstacles: list = []
+_cached_obs_mtime_ns: int = 0
+
+
+def _read_obstacles() -> list:
+    global _cached_obstacles, _cached_obs_mtime_ns
+    try:
+        mt = os.stat(_OBSTACLES_FILE).st_mtime_ns
+        if mt != _cached_obs_mtime_ns:
+            with open(_OBSTACLES_FILE, encoding="utf-8") as fh:
+                _cached_obstacles = json.load(fh)
+            _cached_obs_mtime_ns = mt
+        return _cached_obstacles
+    except Exception:
+        return []
+
+
+@app.get("/api/obstacles", response_class=JSONResponse)
+def get_obstacles():
+    return JSONResponse(_read_obstacles())
+
+
 @app.get("/api/state", response_class=JSONResponse)
 def get_state():
     return JSONResponse(_read_state())

@@ -62,26 +62,19 @@ const CUBES = [
     { label: "Cube_06", x: -1.24, y: -33.05, size: 1.0 },
 ];
 
-// /World/Obstacles — spawned by spawn_path_obstacles.py
-// Traffic cones (≈0.75 m tall, 0.25 m radius), cardboard boxes (≈0.4–0.6 m), and stacks (4× scaled composite: pallet + palette + KLT bins)
-const PATH_OBSTACLES = [
-    { kind: "cone", x: 0.0, y: -24.8 },
-    { kind: "box", x: 6.0, y: -27.2 },
-    { kind: "cone", x: 12.0, y: -24.6 },
-    { kind: "stack", x: 18.5, y: -5.0 },
-    { kind: "stack", x: 18.2, y: 30.0 },
-    { kind: "cone", x: 15.5, y: 15.0 },
-    { kind: "box", x: 18.2, y: 30.0 },
-    { kind: "cone", x: 10.0, y: 46.5 },
-    { kind: "box", x: 0.0, y: 49.5 },
-    { kind: "cone", x: -12.0, y: 46.4 },
-    { kind: "stack", x: -22.5, y: 30.0 },
-    { kind: "box", x: -22.5, y: 30.0 },
-    { kind: "cone", x: -25.5, y: 10.0 },
-    { kind: "box", x: -22.8, y: -10.0 },
-    { kind: "cone", x: -17.0, y: -22.0 },
-    { kind: "box", x: -12.0, y: -20.0 },
-];
+// /World/Obstacles — loaded dynamically from /api/obstacles
+// (written by spawn_path_obstacles.py -> 04_current_outputs/path_obstacles.json)
+let PATH_OBSTACLES = [];
+
+// Fetch once at startup, then poll every 5 s so re-runs of spawn script are
+// reflected in the dashboard without a page reload.
+function _fetchObstacles() {
+    fetch("/api/obstacles").then(r => r.json()).then(data => {
+        if (Array.isArray(data)) PATH_OBSTACLES = data;
+    }).catch(() => { });
+}
+_fetchObstacles();
+setInterval(_fetchObstacles, 5000);
 
 // Forklift dimensions (metres) — from USD ForkliftB bbox
 const FL_WIDTH = 3.03;   // X extent
@@ -197,16 +190,7 @@ function drawScene() {
         ctx.restore();
     });
 
-    // Columns
-    COLUMNS.forEach(c => {
-        const pw = Math.max(worldToPixel(c.w), 4);
-        const ph = Math.max(worldToPixel(c.h), 4);
-        const [cx, cy] = toCanvas(c.x, c.y);
-        ctx.fillStyle = "#6b7a99";
-        ctx.fillRect(cx - pw / 2, cy - ph / 2, pw, ph);
-        ctx.strokeStyle = "#8b9ab9"; ctx.lineWidth = 1;
-        ctx.strokeRect(cx - pw / 2, cy - ph / 2, pw, ph);
-    });
+    // Columns — skipped (visual clutter, not needed for path planning view)
 
     // Obstacle cubes
     CUBES.forEach(c => {
@@ -222,12 +206,15 @@ function drawScene() {
         ctx.fillText(c.label, cx, cy - ps / 2 - 2);
     });
 
-    // Path obstacles (cones, boxes & stacks from spawn_path_obstacles.py)
+    // Path obstacles (cones, boxes, pallets, pushcarts from spawn_path_obstacles.py)
+    // Uses size_x / size_y from the JSON manifest (metres) for to-scale drawing.
     PATH_OBSTACLES.forEach(o => {
         const [cx, cy] = toCanvas(o.x, o.y);
+        const sx = o.size_x || 0.5;  // fallback if manifest lacks size
+        const sy = o.size_y || 0.5;
         if (o.kind === "cone") {
             // Orange triangle (top-down view of a traffic cone)
-            const r = Math.max(worldToPixel(0.35), 5);
+            const r = Math.max(worldToPixel(Math.max(sx, sy) / 2), 5);
             ctx.beginPath();
             ctx.moveTo(cx, cy - r);
             ctx.lineTo(cx - r * 0.866, cy + r * 0.5);
@@ -240,20 +227,31 @@ function drawScene() {
             ctx.stroke();
         } else if (o.kind === "box") {
             // Brown rectangle (top-down view of a cardboard box)
-            const ps = Math.max(worldToPixel(0.5), 5);
+            const pw = Math.max(worldToPixel(sx), 5);
+            const ph = Math.max(worldToPixel(sy), 5);
             ctx.fillStyle = "rgba(140,90,40,0.7)";
-            ctx.fillRect(cx - ps / 2, cy - ps / 2, ps, ps);
+            ctx.fillRect(cx - pw / 2, cy - ph / 2, pw, ph);
             ctx.strokeStyle = "#a06828";
             ctx.lineWidth = 1.5;
-            ctx.strokeRect(cx - ps / 2, cy - ps / 2, ps, ps);
-        } else if (o.kind === "stack") {
-            // Green-gray square (top-down view of a 4× scaled composite stack: pallet + palette + KLT bins)
-            const ps = Math.max(worldToPixel(1.0), 8);
+            ctx.strokeRect(cx - pw / 2, cy - ph / 2, pw, ph);
+        } else if (o.kind === "pallet") {
+            // Green-gray rect (top-down view of a scaled pallet composite)
+            const pw = Math.max(worldToPixel(sx), 8);
+            const ph = Math.max(worldToPixel(sy), 8);
             ctx.fillStyle = "rgba(90,140,105,0.6)";
-            ctx.fillRect(cx - ps / 2, cy - ps / 2, ps, ps);
+            ctx.fillRect(cx - pw / 2, cy - ph / 2, pw, ph);
             ctx.strokeStyle = "#6b9e7f";
             ctx.lineWidth = 2;
-            ctx.strokeRect(cx - ps / 2, cy - ps / 2, ps, ps);
+            ctx.strokeRect(cx - pw / 2, cy - ph / 2, pw, ph);
+        } else if (o.kind === "pushcart") {
+            // Slate rounded rect (top-down view of pushcart + loaded bins)
+            const pw = Math.max(worldToPixel(sx), 8);
+            const ph = Math.max(worldToPixel(sy), 8);
+            ctx.fillStyle = "rgba(95,115,135,0.65)";
+            ctx.fillRect(cx - pw / 2, cy - ph / 2, pw, ph);
+            ctx.strokeStyle = "#8aa0b8";
+            ctx.lineWidth = 2;
+            ctx.strokeRect(cx - pw / 2, cy - ph / 2, pw, ph);
         }
     });
 
