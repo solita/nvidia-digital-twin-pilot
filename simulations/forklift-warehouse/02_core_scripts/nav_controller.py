@@ -28,6 +28,10 @@ from fl_config import (
     WAYPOINTS, ARRIVAL_RADIUS,
     LIDAR_HARD_STOP_DIST, LIDAR_STOP_DIST, LIDAR_SLOW_DIST, LIDAR_FWDSTOP_SPEED,
     STUCK_CHECK_FRAMES, STUCK_ESCAPE_FRAMES, STUCK_MIN_MOVE,
+    ESCAPE_BACKUP_SPEED, ESCAPE_BACKUP_EXTRA_DIST, ESCAPE_TURN_SPEED,
+    ESCAPE_CIRCUMNAVIGATE_SPEED, ESCAPE_PHASE_TIMEOUT, ESCAPE_CIRCUMNAV_TIMEOUT,
+    ESCAPE_FWD_CLEAR_DIST, WAREHOUSE_CENTER_X, WAREHOUSE_CENTER_Y,
+    ESCAPE_BACKUP_INCREMENT, ESCAPE_TURN_INCREMENT, ESCAPE_MAX_ATTEMPTS,
 )
 from lidar_processor import LidarResult
 
@@ -92,9 +96,18 @@ class NavController:
         # Stuck detection
         self._stuck_check_pos:    tuple | None = None
         self._stuck_frames:       int   = 0
-        self._stuck_escape_frames: int  = 0
         self._stuck_wp_count:     int   = 0
         self._escape_just_started: bool = False
+
+        # 4-phase escape state
+        self._escape_phase:       int   = 0   # 0=inactive, 1=backup, 2=turn, 3=circumnavigate
+        self._escape_phase_frames: int  = 0   # frames spent in current phase
+        self._escape_clear_pos:   tuple | None = None  # position when tines cleared
+        self._escape_turn_dir:    float = 0.0  # +1 or -1: direction to turn toward centre
+        self._escape_side_sign:   float = 0.0  # +1=object on right, -1=object on left
+
+        # Incremental escalation: each re-stuck increases backup and turn aggression
+        self._escape_attempt:     int   = 0   # how many times we've retried on same obstacle
 
         # Heading-loss recovery
         self._lost_heading_count: int  = 0
@@ -130,6 +143,7 @@ class NavController:
         if dist < ARRIVAL_RADIUS:
             self._last_arrived_wp = self.wp_index
             self._stuck_wp_count  = 0
+            self._escape_attempt  = 0  # successfully moved on — reset escalation
             self.wp_index        += 1
             if self.wp_index >= len(WAYPOINTS):
                 self.wp_index = 0
@@ -157,7 +171,7 @@ class NavController:
         turn_scale = max(0.5, 1.0 - max(0.0, abs(heading_err) - 15.0) / 90.0)
 
         # ── Stuck detection → may override everything ──────────────────────────
-        escape = self._update_stuck(fx, fy, heading_err, lidar.repulsion_steer)
+        escape = self._update_stuck(fx, fy, heading_err, lidar)
         if escape is not None:
             vel, steer = escape
             just_started = self._escape_just_started
@@ -232,58 +246,233 @@ class NavController:
     # ── Stuck detection state machine ──────────────────────────────────────────
 
     def _update_stuck(self, fx: float, fy: float,
-                      heading_err: float, repulsion_steer: float) -> tuple | None:
+                      heading_err: float, lidar: LidarResult) -> tuple | None:
         """Return (velocity, steer_angle) while escape is running, else None.
+
+        4-phase lidar-guided escape maneuver:
+          Phase 1 (BACKUP):  Reverse until forward cone clears, then 1 extra metre.
+          Phase 2 (TURN):    Rotate toward warehouse centre until front cone is clear.
+          Phase 3 (CIRCUMNAV): Drive forward keeping object on one side via lidar.
+          Phase 4 (done):    Return None → normal path-following resumes.
 
         Also sets self._escape_just_started = True on the first escape frame
         so the main loop can signal LidarProcessor.reset_debounce().
         """
-        # Don't track stuck position while we're already executing an escape
-        if self._stuck_escape_frames <= 0:
-            if self._stuck_check_pos is None:
+        # ── If escape is active, run the phase state machine ───────────────────
+        if self._escape_phase > 0:
+            return self._run_escape_phase(fx, fy, lidar)
+
+        # ── Otherwise, detect whether we are stuck ─────────────────────────────
+        if self._stuck_check_pos is None:
+            self._stuck_check_pos = (fx, fy)
+            self._stuck_frames    = 0
+        else:
+            moved = math.hypot(fx - self._stuck_check_pos[0],
+                               fy - self._stuck_check_pos[1])
+            if moved > STUCK_MIN_MOVE:
                 self._stuck_check_pos = (fx, fy)
                 self._stuck_frames    = 0
             else:
-                moved = math.hypot(fx - self._stuck_check_pos[0],
-                                   fy - self._stuck_check_pos[1])
-                if moved > STUCK_MIN_MOVE:
-                    self._stuck_check_pos = (fx, fy)
-                    self._stuck_frames    = 0
-                else:
-                    self._stuck_frames += 1
-                    if self._stuck_frames == STUCK_CHECK_FRAMES:
-                        self._stuck_wp_count += 1
-                        if self._stuck_wp_count >= 5:
-                            # Completely blocked — skip to next waypoint
-                            self.wp_index         = (self.wp_index + 1) % len(WAYPOINTS)
-                            self._stuck_wp_count  = 0
-                            self._stuck_frames    = 0
-                            self._stuck_check_pos = (fx, fy)
-                        else:
-                            # Start escape maneuver
-                            self._stuck_escape_frames  = STUCK_ESCAPE_FRAMES
-                            self._stuck_frames         = 0
-                            self._stuck_check_pos      = (fx, fy)
-                            self._escape_just_started  = True
-
-        if self._stuck_escape_frames > 0:
-            half = STUCK_ESCAPE_FRAMES // 2
-            if self._stuck_escape_frames > half:
-                # Phase 1: reverse straight back to break physical contact
-                vel   =  abs(DRIVE_VELOCITY) * 0.40
-                steer =  0.0
-            else:
-                # Phase 2: forward + open-side steer
-                if abs(repulsion_steer) < 1.0:
-                    escape_steer = STEER_MAX if heading_err > 0 else -STEER_MAX
-                else:
-                    escape_steer = STEER_MAX if repulsion_steer >= 0 else -STEER_MAX
-                vel   = DRIVE_VELOCITY
-                steer = -escape_steer   # negated for joint axis convention
-            self._stuck_escape_frames -= 1
-            return (vel, steer)
+                self._stuck_frames += 1
+                if self._stuck_frames >= STUCK_CHECK_FRAMES:
+                    self._escape_attempt += 1
+                    self._stuck_wp_count += 1
+                    if (self._stuck_wp_count >= 5
+                            or self._escape_attempt > ESCAPE_MAX_ATTEMPTS):
+                        # Completely blocked — skip waypoint, reset escalation
+                        self.wp_index         = (self.wp_index + 1) % len(WAYPOINTS)
+                        self._stuck_wp_count  = 0
+                        self._escape_attempt  = 0
+                        self._stuck_frames    = 0
+                        self._stuck_check_pos = (fx, fy)
+                    else:
+                        # Start 4-phase escape with escalated parameters
+                        self._begin_escape(fx, fy, lidar)
+                        return self._run_escape_phase(fx, fy, lidar)
 
         return None
+
+    def _begin_escape(self, fx: float, fy: float, lidar: LidarResult) -> None:
+        """Initialise the 4-phase escape maneuver."""
+        self._escape_phase        = 1  # start with backup
+        self._escape_phase_frames = 0
+        self._escape_clear_pos    = None
+        self._stuck_frames        = 0
+        self._stuck_check_pos     = (fx, fy)
+        self._escape_just_started = True
+
+        # Determine turn direction: toward warehouse centre
+        bearing_to_centre = math.degrees(
+            math.atan2(WAREHOUSE_CENTER_Y - fy, WAREHOUSE_CENTER_X - fx)
+        )
+        # Forklift forward heading (forks point body -X → effective heading + 180)
+        fwd_heading = (self._smooth_heading or 0.0) + 180.0
+        angle_to_centre = _angle_diff(bearing_to_centre, fwd_heading)
+        self._escape_turn_dir = 1.0 if angle_to_centre >= 0 else -1.0
+
+        # Determine which side the object is on (for circumnavigation)
+        # If turning right (+steer), object ends up on the left side and vice versa
+        self._escape_side_sign = -self._escape_turn_dir  # +1=obj right, -1=obj left
+
+    def _run_escape_phase(self, fx: float, fy: float,
+                          lidar: LidarResult) -> tuple | None:
+        """Execute the current escape phase and return (velocity, steer_angle).
+
+        Returns None if the escape maneuver is complete (transition to normal nav).
+        """
+        self._escape_phase_frames += 1
+        just_started = self._escape_just_started
+        self._escape_just_started = False
+
+        if self._escape_phase == 1:
+            result = self._escape_phase_backup(fx, fy, lidar)
+        elif self._escape_phase == 2:
+            result = self._escape_phase_turn(fx, fy, lidar)
+        elif self._escape_phase == 3:
+            result = self._escape_phase_circumnavigate(fx, fy, lidar)
+        else:
+            # Escape complete
+            self._escape_phase = 0
+            return None
+
+        if result is None:
+            # Phase signalled completion — escape done
+            self._escape_phase = 0
+            return None
+
+        # Re-set the just_started flag so the first call propagates it
+        if just_started:
+            self._escape_just_started = True
+
+        return result
+
+    def _advance_phase(self) -> None:
+        """Move to next escape phase, reset per-phase frame counter."""
+        self._escape_phase       += 1
+        self._escape_phase_frames = 0
+
+    # ── Phase 1: BACKUP until tines clear + escalated extra distance ──────────
+
+    def _escape_phase_backup(self, fx: float, fy: float,
+                             lidar: LidarResult) -> tuple | None:
+        """Reverse until forward cone clears, then back up (base + attempt*1m) more."""
+        vel   = abs(DRIVE_VELOCITY) * ESCAPE_BACKUP_SPEED  # positive = reverse
+        steer = 0.0  # straight back
+
+        # Escalated backup distance: base + 1 m per attempt
+        required_extra = (ESCAPE_BACKUP_EXTRA_DIST
+                          + ESCAPE_BACKUP_INCREMENT * (self._escape_attempt - 1))
+
+        # Timeout scales with distance (more backup = more time allowed)
+        timeout = ESCAPE_PHASE_TIMEOUT + 60 * (self._escape_attempt - 1)
+        if self._escape_phase_frames >= timeout:
+            self._advance_phase()
+            return (vel, steer)
+
+        # Check if tines have cleared (forward cone no longer detecting close object)
+        tines_clear = lidar.forward_min >= LIDAR_STOP_DIST or not lidar.fwd_stop
+
+        if tines_clear and self._escape_clear_pos is None:
+            # Mark the position where we first cleared
+            self._escape_clear_pos = (fx, fy)
+
+        if self._escape_clear_pos is not None:
+            # Continue backing until escalated extra distance from the clearing point
+            extra_dist = math.hypot(fx - self._escape_clear_pos[0],
+                                    fy - self._escape_clear_pos[1])
+            if extra_dist >= required_extra:
+                self._advance_phase()
+                return (vel, steer)
+
+        return (vel, steer)
+
+    # ── Phase 2: TURN toward warehouse centre until cone is clear ─────────────
+
+    def _escape_phase_turn(self, fx: float, fy: float,
+                           lidar: LidarResult) -> tuple | None:
+        """Rotate toward warehouse centre with escalating aggressiveness.
+
+        Each retry increases the turn steer multiplier so the forklift swings
+        wider around larger objects.
+        """
+        # Escalated turn intensity: base full steer + increment per attempt
+        turn_mult = min(1.0, 1.0 + ESCAPE_TURN_INCREMENT * (self._escape_attempt - 1))
+        # Increase creep speed slightly on retries so the arc radius grows
+        creep_speed = ESCAPE_TURN_SPEED * (1.0 + 0.15 * (self._escape_attempt - 1))
+        creep_speed = min(creep_speed, 0.50)  # cap at 50 %
+
+        vel   = DRIVE_VELOCITY * creep_speed
+        steer = -(self._escape_turn_dir * STEER_MAX * turn_mult)  # negated for joint axis
+        # Clamp to joint limits
+        steer = max(-STEER_MAX, min(STEER_MAX, steer))
+
+        # Timeout scales with attempt (more time for bigger turns)
+        timeout = ESCAPE_PHASE_TIMEOUT + 80 * (self._escape_attempt - 1)
+        if self._escape_phase_frames >= timeout:
+            self._advance_phase()
+            return (vel, steer)
+
+        # Transition: forward cone is completely clear
+        if (not lidar.fwd_stop
+                and lidar.forward_min >= ESCAPE_FWD_CLEAR_DIST
+                and self._escape_phase_frames > 10):  # min frames to avoid false clear
+            self._advance_phase()
+            return (vel, steer)
+
+        return (vel, steer)
+
+    # ── Phase 3: CIRCUMNAVIGATE — drive past object keeping it on one side ────
+
+    def _escape_phase_circumnavigate(self, fx: float, fy: float,
+                                     lidar: LidarResult) -> tuple | None:
+        """Drive forward keeping the obstacle between lidar side edge and body.
+
+        Object should be detected on one lateral side but NOT in the forward cone.
+        When the side sensors no longer detect the object, the obstacle has been passed.
+        """
+        vel = DRIVE_VELOCITY * ESCAPE_CIRCUMNAVIGATE_SPEED
+
+        # Timeout fallback
+        if self._escape_phase_frames >= ESCAPE_CIRCUMNAV_TIMEOUT:
+            self._escape_phase = 0  # end escape entirely
+            return None
+
+        # Determine if object is still on the expected side using lidar slices
+        # lidar_slices: [FL, FC, FR, RF, RB, BR, BL, LB, LF]
+        #   RF=index 3 (right-front), LF=index 8 (left-front)
+        #   FR=index 2 (front-right), FL=index 0 (front-left)
+        if self._escape_side_sign > 0:
+            # Object should be on the right side
+            object_on_side = lidar.lidar_slices[3] or lidar.lidar_slices[2]
+        else:
+            # Object should be on the left side
+            object_on_side = lidar.lidar_slices[8] or lidar.lidar_slices[0]
+
+        # Gentle steer away from the object side to maintain clearance
+        # (small steer away keeps a safe corridor)
+        if object_on_side:
+            steer = -(self._escape_turn_dir * STEER_MAX * 0.3)
+        else:
+            # Object no longer on side — drive straight briefly then exit
+            steer = 0.0
+
+        # If forward cone detects something, add corrective steer away
+        if lidar.fwd_stop or lidar.forward_min < LIDAR_STOP_DIST:
+            steer = -(self._escape_turn_dir * STEER_MAX * 0.6)
+            vel   = DRIVE_VELOCITY * ESCAPE_TURN_SPEED
+
+        # Transition: object no longer on side AND forward is clear → passed it
+        if (not object_on_side
+                and not lidar.fwd_stop
+                and lidar.forward_min >= ESCAPE_FWD_CLEAR_DIST
+                and self._escape_phase_frames > 30):
+            # Escape complete — successfully passed the object, reset escalation
+            self._escape_phase    = 0
+            self._escape_attempt  = 0
+            self._stuck_check_pos = (fx, fy)
+            return None
+
+        return (vel, steer)
 
     # ── Heading-loss recovery state machine ────────────────────────────────────
 
