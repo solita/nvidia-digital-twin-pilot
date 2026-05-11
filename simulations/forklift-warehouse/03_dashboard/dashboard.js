@@ -718,19 +718,28 @@ function setObstacleParams(params) {
 }
 
 // Wire up slider live value displays
+function checkObstacleDirty() {
+    // Generate always enabled — re-rolling with same params still produces a new layout
+    document.getElementById('obsGenerate').disabled = false;
+}
+
 document.getElementById('obsRandomness').addEventListener('input', function () {
     document.getElementById('obsRandomnessVal').textContent = this.value + '%';
+    checkObstacleDirty();
 });
 
 document.querySelectorAll('.obs-asset-section').forEach(section => {
     section.querySelector('[data-param="weight"]').addEventListener('input', function () {
         section.querySelector('[data-val="weight"]').textContent = this.value + ' kg';
+        checkObstacleDirty();
     });
     section.querySelector('[data-param="density"]').addEventListener('input', function () {
         section.querySelector('[data-val="density"]').textContent = this.value;
+        checkObstacleDirty();
     });
     section.querySelector('[data-param="size"]').addEventListener('input', function () {
         section.querySelector('[data-val="size"]').textContent = parseFloat(this.value).toFixed(1) + 'x';
+        checkObstacleDirty();
     });
 });
 
@@ -757,6 +766,7 @@ document.getElementById('obsGenerate').addEventListener('click', () => {
 // Default button
 document.getElementById('obsDefault').addEventListener('click', () => {
     setObstacleParams(OBS_DEFAULTS);
+    checkObstacleDirty();
     document.getElementById('obsCmdStatus').textContent = 'Reset to defaults';
     setTimeout(() => { document.getElementById('obsCmdStatus').textContent = ''; }, 2000);
 });

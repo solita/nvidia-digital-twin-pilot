@@ -10,6 +10,7 @@ Scene must already be open in Isaac Sim.
 from __future__ import annotations
 
 import json
+import math
 import os
 import random
 
@@ -20,7 +21,53 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
 # -- Configuration -------------------------------------------------------------
 OBSTACLES_GROUP = "/World/Obstacles"
-SEED = 42
+_DEFAULT_SEED = 42
+
+# Read obstacle_config.json written by the dashboard (randomness slider)
+_OBSTACLE_CONFIG_FILE = (
+    "/isaac-sim/.local/share/ov/data/nvidia-digital-twin-pilot/"
+    "simulations/forklift-warehouse/04_current_outputs/obstacle_config.json"
+)
+_obstacle_cfg: dict = {}
+try:
+    with open(_OBSTACLE_CONFIG_FILE, encoding="utf-8") as _cfg_fh:
+        _obstacle_cfg = json.load(_cfg_fh)
+except Exception:
+    pass
+# randomness 0-100 → inverted: 0% = 5m offset (far from path), 100% = 0m (on path)
+_RANDOMNESS_PCT = _obstacle_cfg.get("randomness", 0)
+BASE_OFFSET = (100 - _RANDOMNESS_PCT) / 100.0 * 5.0
+PERPENDICULAR_VARIANCE = 1.0  # ±1m variance between assets
+# Use current time as seed when randomness > 0 so each generate is different
+SEED = int.from_bytes(os.urandom(4), "big") if _RANDOMNESS_PCT > 0 else _DEFAULT_SEED
+
+# Per-asset parameters from config (density, weight, size)
+_ASSET_CFG = _obstacle_cfg.get("assets", {})
+_DEFAULTS = {
+    "cone":     {"density": 4, "weight": 5,   "size": 1.0},
+    "box":      {"density": 4, "weight": 20,  "size": 1.0},
+    "pallet":   {"density": 2, "weight": 200, "size": 1.0},
+    "pushcart": {"density": 2, "weight": 80,  "size": 1.0},
+}
+_ASSET_PARAMS: dict[str, dict] = {}
+for _kind, _defs in _DEFAULTS.items():
+    _kcfg = _ASSET_CFG.get(_kind, {})
+    _ASSET_PARAMS[_kind] = {
+        "density": int(_kcfg.get("density", _defs["density"])),
+        "weight":  float(_kcfg.get("weight",  _defs["weight"])),
+        "size":    float(_kcfg.get("size",    _defs["size"])),
+    }
+_DENSITY = {k: v["density"] for k, v in _ASSET_PARAMS.items()}
+
+# Patrol waypoints — must match fl_config.py
+_WAYPOINTS = [
+    ( -8.0, -26.0),
+    ( 17.0, -26.0),
+    ( 17.0,  48.0),
+    (-24.0,  48.0),
+    (-24.0, -26.0),
+    ( -8.0, -17.5),
+]
 
 CONE_ASSETS = [
     "https://omniverse-content-staging.s3.us-west-2.amazonaws.com/Assets/simready_content/common_assets/props/trafficcone_a05/trafficcone_a05.usd",
@@ -53,25 +100,80 @@ ADD_OBS_KLT_LAYERS = 4
 
 OBSTACLE_Z = 0.0
 
-# (kind, x, y)
-OBSTACLES = [
-    ("cone", 0.0, -24.8),
-    ("box", 6.0, -27.2),
-    ("cone", 12.0, -24.6),
-    ("pushcart", 18.5, -5.0),
-    ("pallet", 18.2, 30.0),
-    ("cone", 15.5, 15.0),
-    ("box", 18.2, 30.0),
-    ("cone", 10.0, 46.5),
-    ("box", 0.0, 49.5),
-    ("cone", -12.0, 46.4),
-    ("pallet", -22.5, 30.0),
-    ("box", -22.5, 30.0),
-    ("cone", -25.5, 10.0),
-    ("box", -22.8, -10.0),
-    ("cone", -17.0, -22.0),
-    ("box", -12.0, -20.0),
-]
+def _build_obstacle_list(rng: random.Random) -> list[tuple[str, float, float]]:
+    """Generate obstacle positions along the patrol path based on density config.
+
+    Each asset type gets `density` obstacles distributed uniformly along
+    the patrol-path perimeter.  Randomness slider is inverted: 0% places
+    obstacles ~5 m from the path, 100% places them directly on the path.
+    A ±1 m perpendicular variance is always applied for natural spread.
+    """
+    # Compute cumulative segment lengths along the patrol loop.
+    n_wp = len(_WAYPOINTS)
+    segments: list[tuple[float, float, float, float, float]] = []  # (x0, y0, dx, dy, length)
+    total_length = 0.0
+    for i in range(n_wp):
+        x0, y0 = _WAYPOINTS[i]
+        x1, y1 = _WAYPOINTS[(i + 1) % n_wp]
+        dx, dy = x1 - x0, y1 - y0
+        seg_len = math.sqrt(dx * dx + dy * dy)
+        segments.append((x0, y0, dx, dy, seg_len))
+        total_length += seg_len
+
+    def _point_on_path(frac: float) -> tuple[float, float, float, float]:
+        """Return (x, y, perp_x, perp_y) at fractional distance along the loop."""
+        target = frac * total_length
+        accum = 0.0
+        for x0, y0, dx, dy, seg_len in segments:
+            if accum + seg_len >= target or seg_len == 0:
+                t = (target - accum) / seg_len if seg_len > 0 else 0.0
+                px = x0 + dx * t
+                py = y0 + dy * t
+                # Perpendicular direction (normalised)
+                inv_len = 1.0 / seg_len if seg_len > 0 else 0.0
+                perp_x = -dy * inv_len
+                perp_y = dx * inv_len
+                return px, py, perp_x, perp_y
+            accum += seg_len
+        # Fallback to last segment end
+        x0, y0, dx, dy, seg_len = segments[-1]
+        return x0 + dx, y0 + dy, 0.0, 0.0
+
+    obstacles: list[tuple[str, float, float]] = []
+    # Collect all (kind, count) pairs, sort by kind for determinism.
+    kinds = sorted(_DENSITY.items())
+    total_count = sum(c for _, c in kinds)
+    if total_count == 0:
+        return obstacles
+
+    # Generate total_count unique, evenly-spaced placement points along the
+    # full patrol path, then randomly assign each asset type its share.
+    # This guarantees no two assets share the same position.
+    placement_fracs = [i / total_count for i in range(total_count)]
+    rng.shuffle(placement_fracs)
+
+    # Assign fractions to each asset type from the shuffled pool.
+    offset = 0
+    for kind, count in kinds:
+        if count <= 0:
+            continue
+        for i in range(count):
+            frac = placement_fracs[offset + i]
+            px, py, perp_x, perp_y = _point_on_path(frac)
+            # Lateral offset: base distance from path (inverted slider)
+            # plus ±1m perpendicular variance between assets
+            direction = rng.choice([-1, 1])
+            lateral = direction * BASE_OFFSET + rng.uniform(-PERPENDICULAR_VARIANCE, PERPENDICULAR_VARIANCE)
+            # Small along-path jitter for natural feel
+            along = rng.uniform(-PERPENDICULAR_VARIANCE * 0.3, PERPENDICULAR_VARIANCE * 0.3)
+            seg_dx = perp_y   # along-path direction (rotate perp back)
+            seg_dy = -perp_x
+            jx = px + perp_x * lateral + seg_dx * along
+            jy = py + perp_y * lateral + seg_dy * along
+            obstacles.append((kind, jx, jy))
+        offset += count
+
+    return obstacles
 
 # -- Stage --------------------------------------------------------------------
 stage = omni.usd.get_context().get_stage()
@@ -179,13 +281,20 @@ else:
 
     random.seed(SEED)
 
+    # Build dynamic obstacle list from density config
+    _rng = random.Random(SEED)
+    OBSTACLES = _build_obstacle_list(_rng)
+
     for idx, (kind, x, y) in enumerate(OBSTACLES, start=1):
         prim_path = f"{OBSTACLES_GROUP}/{kind}_{idx:02d}"
         prim = stage.DefinePrim(prim_path, "Xform")
 
+        # Positions already have jitter applied by _build_obstacle_list
+        jx, jy = x, y
+
         xf = UsdGeom.Xformable(prim)
         xf.ClearXformOpOrder()
-        xf.AddTranslateOp().Set(Gf.Vec3d(x, y, OBSTACLE_Z))
+        xf.AddTranslateOp().Set(Gf.Vec3d(jx, jy, OBSTACLE_Z))
         yaw = random.uniform(0.0, 360.0)
         rot_q = Gf.Rotation(Gf.Vec3d(0, 0, 1), yaw).GetQuat()
         q = Gf.Quatf(
@@ -196,17 +305,31 @@ else:
         )
         xf.AddOrientOp(UsdGeom.XformOp.PrecisionFloat).Set(q)
 
+        # Per-asset size and weight from config
+        _params = _ASSET_PARAMS.get(kind, {})
+        _size = _params.get("size", 1.0)
+        _weight = _params.get("weight", 0.0)
+
         if kind == "cone":
+            if _size != 1.0:
+                xf.AddScaleOp(UsdGeom.XformOp.PrecisionDouble).Set(
+                    Gf.Vec3d(_size, _size, _size)
+                )
             asset_url = random.choice(CONE_ASSETS)
             prim.GetReferences().AddReference(asset_url)
             _apply_collision_apis(prim)
         elif kind == "box":
+            if _size != 1.0:
+                xf.AddScaleOp(UsdGeom.XformOp.PrecisionDouble).Set(
+                    Gf.Vec3d(_size, _size, _size)
+                )
             asset_url = random.choice(BOX_ASSETS)
             prim.GetReferences().AddReference(asset_url)
             _apply_collision_apis(prim)
         elif kind == "pallet":
+            _pallet_scale = STACK_SCALE * _size
             xf.AddScaleOp(UsdGeom.XformOp.PrecisionDouble).Set(
-                Gf.Vec3d(STACK_SCALE, STACK_SCALE, STACK_SCALE)
+                Gf.Vec3d(_pallet_scale, _pallet_scale, _pallet_scale)
             )
             # Build a composed pallet: export pallet (bottom), palette (middle), bins grid (top).
             export_pallet = stage.DefinePrim(f"{prim_path}/exportpallet", "Xform")
@@ -237,11 +360,20 @@ else:
                     f"[spawn_path_obstacles] pushcart assets unavailable at index {idx}; skipping"
                 )
                 continue
+            if _size != 1.0:
+                xf.AddScaleOp(UsdGeom.XformOp.PrecisionDouble).Set(
+                    Gf.Vec3d(_size, _size, _size)
+                )
             _build_pushcart_stack(prim_path, add_obs_pushcart_asset, add_obs_klt_asset)
             _apply_collision_apis(prim)
             _apply_collision_to_meshes(prim)
         else:
             carb.log_warn(f"[spawn_path_obstacles] Unknown obstacle kind '{kind}' at index {idx}; skipping")
+
+        # Apply physics mass from weight slider
+        if _weight > 0:
+            mass_api = UsdPhysics.MassAPI.Apply(prim)
+            mass_api.GetMassAttr().Set(_weight)
 
     # Export obstacle manifest so the dashboard can pick it up dynamically.
     # Compute bounding boxes so the dashboard draws each obstacle to scale.
@@ -253,7 +385,7 @@ else:
     _obs_out = []
     for _idx, (_kind, _x, _y) in enumerate(OBSTACLES, start=1):
         _prim_path = f"{OBSTACLES_GROUP}/{_kind}_{_idx:02d}"
-        _entry = {"kind": _kind, "x": _x, "y": _y}
+        _entry = {"kind": _kind, "x": round(_x, 3), "y": round(_y, 3)}
         _prim = stage.GetPrimAtPath(_prim_path)
         if _prim.IsValid():
             _world_range = _bbox_cache.ComputeWorldBound(_prim).GetRange()

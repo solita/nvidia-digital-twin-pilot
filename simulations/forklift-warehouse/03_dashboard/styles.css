@@ -499,13 +499,25 @@ canvas#map {
     gap: 10px;
 }
 
-.btn-generate {
+button.btn.btn-generate {
+    display: block !important;
+    flex: none !important;
     background: var(--green);
     color: #000;
+    width: 100% !important;
+    text-align: center;
+    box-sizing: border-box;
 }
 
-.btn-generate:hover {
+.btn-generate:hover:not(:disabled) {
     background: #3da06a;
+}
+
+.btn-generate:disabled {
+    background: var(--border);
+    color: var(--muted);
+    cursor: not-allowed;
+    opacity: 0.6;
 }
 
 .btn-default {

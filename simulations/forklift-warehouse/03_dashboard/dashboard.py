@@ -17,6 +17,7 @@ Then open http://<host>:8080 in a browser.
 
 import asyncio
 import json
+import logging
 import os
 import pathlib
 import urllib.request
@@ -24,6 +25,33 @@ import urllib.request
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.staticfiles import StaticFiles
+
+
+# ---------------------------------------------------------------------------
+# Quiet repeated 200-OK access-log lines: show the first hit per endpoint,
+# then suppress further 200s while still printing every non-200 (error) line.
+# ---------------------------------------------------------------------------
+class _QuietAccessFilter(logging.Filter):
+    """Allow each '200 OK' route through once, then suppress duplicates."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._seen_ok: set[str] = set()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        # Only touch uvicorn access lines that contain a status code
+        if "200 OK" not in msg:
+            return True  # always show non-200 lines
+        # Extract the route path (e.g. /api/state) to de-dup per endpoint
+        route = msg.split('"')[1] if '"' in msg else msg
+        if route in self._seen_ok:
+            return False  # suppress duplicate
+        self._seen_ok.add(route)
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_QuietAccessFilter())
 
 PORT = 8080
 

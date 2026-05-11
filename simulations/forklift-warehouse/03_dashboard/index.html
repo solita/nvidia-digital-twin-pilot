@@ -140,10 +140,8 @@
         <div class="tab-panel" id="tabObstacles">
           <div class="card">
             <div class="obs-btn-bar">
-              <button class="btn btn-generate" id="obsGenerate">Generate</button>
-              <button class="btn btn-default" id="obsDefault">Default</button>
+              <button class="btn btn-default" id="obsDefault">Revert to default</button>
             </div>
-            <div id="obsCmdStatus" style="font-size:0.72rem;color:var(--muted);margin-top:8px"></div>
           </div>
           <div class="card">
             <div class="card-title">Randomness</div>
@@ -189,6 +187,10 @@
                 <div class="override-row"><label class="override-label">Size</label><input type="range" class="override-slider" data-param="size" min="1" max="3" step="0.1" value="1"><span class="override-val" data-val="size">1.0x</span></div>
               </div>
             </details>
+          </div>
+          <div class="card">
+            <button class="btn btn-generate" id="obsGenerate">Generate</button>
+            <div id="obsCmdStatus" style="font-size:0.72rem;color:var(--muted);margin-top:8px"></div>
           </div>
         </div>
 

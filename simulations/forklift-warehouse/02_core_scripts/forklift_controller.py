@@ -376,6 +376,20 @@ async def run_forklift() -> None:
                     _log("info", f"LIDAR range → {float(value):.1f} m", diag)
                 except (TypeError, ValueError):
                     pass
+            elif action == "run_script" and value:
+                script_path = str(value)
+                # Remap host path to container path if needed
+                host_prefix = "/home/ubuntu/docker/isaac-sim/data/"
+                container_prefix = "/isaac-sim/.local/share/ov/data/"
+                if script_path.startswith(host_prefix):
+                    script_path = container_prefix + script_path[len(host_prefix):]
+                _log("info", f"run_script: {script_path}", diag)
+                try:
+                    with open(script_path, encoding="utf-8") as _sf:
+                        exec(compile(_sf.read(), script_path, "exec"), {"__name__": "__main__"})
+                    _log("info", f"run_script: completed OK", diag)
+                except Exception as _exc:
+                    _log("error", f"run_script FAILED: {_exc}", diag)
             elif action == "reset_location":
                 reset_requested = True
 
