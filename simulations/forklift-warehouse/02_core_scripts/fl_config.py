@@ -102,8 +102,26 @@ FORKLIFT_SAFE_HALF_LATERAL = 0.565 + 0.15
 # ── Stuck detection & escape ───────────────────────────────────────────────────
 
 STUCK_CHECK_FRAMES  = 180   # no movement for this many frames → escape maneuver
-STUCK_ESCAPE_FRAMES =  80   # escape duration: 40 reverse + 40 forward-with-steer
+STUCK_ESCAPE_FRAMES =  80   # legacy fallback duration (used if lidar unavailable)
 STUCK_MIN_MOVE      = 0.10  # m — minimum displacement to reset stuck counter
+
+# 4-phase lidar-guided escape maneuver
+ESCAPE_BACKUP_SPEED          = 0.40   # fraction of DRIVE_VELOCITY while reversing
+ESCAPE_BACKUP_EXTRA_DIST     = 1.0    # m — base extra distance after tines clear object
+ESCAPE_TURN_SPEED            = 0.20   # fraction for in-place turning
+ESCAPE_CIRCUMNAVIGATE_SPEED  = 0.60   # fraction while driving around the object
+ESCAPE_PHASE_TIMEOUT         = 300    # frames — max per phase before fallback (5 s)
+ESCAPE_CIRCUMNAV_TIMEOUT     = 600    # frames — max for circumnavigation (10 s)
+ESCAPE_FWD_CLEAR_DIST        = 6.0    # m — forward_min above this = cone is clear
+
+# Incremental escalation — each retry adds more backup and turn aggression
+ESCAPE_BACKUP_INCREMENT      = 1.0    # m — added to backup distance per retry
+ESCAPE_TURN_INCREMENT        = 0.15   # multiplier added to turn steer per retry (stacks)
+ESCAPE_MAX_ATTEMPTS          = 5      # max escalation before skipping waypoint
+
+# Warehouse centre reference (for "turn to middle" bearing)
+WAREHOUSE_CENTER_X = -5.0
+WAREHOUSE_CENTER_Y =  0.0
 
 # ── Status indicator (dashboard badge) ─────────────────────────────────────────
 
