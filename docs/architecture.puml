@@ -1,0 +1,57 @@
+@startuml
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Segoe UI
+skinparam shadowing false
+skinparam packageStyle rectangle
+skinparam componentStyle rectangle
+skinparam ArrowColor #333333
+skinparam ArrowThickness 1
+skinparam wrapWidth 220
+
+' High-level architecture based on ARCHITECTURE.md
+
+rectangle "💻  Developer Machine" as DEV {
+  component "🧑‍💻  VS Code Remote\n(SSH :22, Isaac Sim ext :8226)" as VSC
+  component "🌐  Browser Dashboard\n(http://<ip>:8080)" as BROWSER
+  component "🛠️  Brev CLI\n(start/stop, auto-stop)" as BREVCLI
+}
+
+rectangle "☁️  AWS Brev Instance (L40S GPU)" as INSTANCE {
+  rectangle "🐳  Isaac Sim 5.1.0 Container\n(--network=host)" as DOCKER {
+
+    package "🚜  Forklift Simulation (asyncio)" as SIM {
+      component "🧱  USD Stage\nPhysX + LIDAR" as USD
+      component "🎮  forklift_controller.py\nmain loop" as CTRL
+      component "📡  lidar_processor.py\nobstacle + APF" as LIDARP
+      component "🧭  nav_controller.py\nwaypoint + PD" as NAV
+      component "📨  HTTP Command Server\n:8081" as CMDSRV
+    }
+
+    component "⚡  Dashboard Backend\nFastAPI :8080" as FASTAPI
+  }
+
+  database "🗄️  Persistent Storage\n~/docker/isaac-sim/data/<repo>/\nstate + outputs" as STORAGE
+}
+
+VSC --> INSTANCE : SSH :22
+VSC --> DOCKER : TCP :8226 (Run Remotely)
+BROWSER --> FASTAPI : HTTP/WS :8080
+BREVCLI --> INSTANCE : provision/start/stop
+
+FASTAPI --> CMDSRV : POST /cmd
+FASTAPI --> STORAGE : read state json
+
+CMDSRV --> CTRL : pause/resume/override
+
+CTRL --> USD : apply drive/steer
+USD --> CTRL : pose + lidar data
+
+CTRL ..> LIDARP : lidar depth
+CTRL ..> NAV : pose + waypoint
+LIDARP ..> CTRL : LidarResult
+NAV ..> CTRL : DriveCommand
+
+CTRL --> STORAGE : write state json
+DOCKER ..> BROWSER : WebRTC optional\n:49100 / :47998
+
+@enduml
