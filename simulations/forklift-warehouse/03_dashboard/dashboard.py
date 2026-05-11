@@ -210,6 +210,9 @@ def generate_obstacles(body: dict):
     randomness = body.get("randomness", 30)
     assets = body.get("assets", {})
     config = {"randomness": randomness, "assets": assets}
+    placements = body.get("placements")
+    if placements is not None:
+        config["placements"] = placements
     # Persist config so spawn script can read it
     try:
         with open(_OBSTACLE_CONFIG_FILE, "w", encoding="utf-8") as fh:

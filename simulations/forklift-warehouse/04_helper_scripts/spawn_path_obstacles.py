@@ -281,9 +281,13 @@ else:
 
     random.seed(SEED)
 
-    # Build dynamic obstacle list from density config
-    _rng = random.Random(SEED)
-    OBSTACLES = _build_obstacle_list(_rng)
+    # Use explicit placements from config if provided, otherwise generate
+    _explicit = _obstacle_cfg.get("placements")
+    if _explicit:
+        OBSTACLES = [(p[0], p[1], p[2]) for p in _explicit]
+    else:
+        _rng = random.Random(SEED)
+        OBSTACLES = _build_obstacle_list(_rng)
 
     for idx, (kind, x, y) in enumerate(OBSTACLES, start=1):
         prim_path = f"{OBSTACLES_GROUP}/{kind}_{idx:02d}"

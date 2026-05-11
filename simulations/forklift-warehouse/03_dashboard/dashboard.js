@@ -683,6 +683,26 @@ const OBS_DEFAULTS = {
     }
 };
 
+// Original obstacle placements from before the dynamic generation system
+const DEFAULT_PLACEMENTS = [
+    ["cone", 0.0, -24.8],
+    ["box", 6.0, -27.2],
+    ["cone", 12.0, -24.6],
+    ["pallet", 18.5, -5.0],
+    ["pallet", 18.2, 30.0],
+    ["cone", 15.5, 15.0],
+    ["box", 18.2, 30.0],
+    ["cone", 10.0, 46.5],
+    ["box", 0.0, 49.5],
+    ["cone", -12.0, 46.4],
+    ["pallet", -22.5, 30.0],
+    ["box", -22.5, 30.0],
+    ["cone", -25.5, 10.0],
+    ["box", -22.8, -10.0],
+    ["cone", -17.0, -22.0],
+    ["box", -12.0, -20.0],
+];
+
 function getObstacleParams() {
     const randomness = parseInt(document.getElementById('obsRandomness').value, 10);
     const assets = {};
@@ -763,12 +783,26 @@ document.getElementById('obsGenerate').addEventListener('click', () => {
         });
 });
 
-// Default button
+// Default button — reset sliders AND regenerate with original placements
 document.getElementById('obsDefault').addEventListener('click', () => {
     setObstacleParams(OBS_DEFAULTS);
     checkObstacleDirty();
-    document.getElementById('obsCmdStatus').textContent = 'Reset to defaults';
-    setTimeout(() => { document.getElementById('obsCmdStatus').textContent = ''; }, 2000);
+    const statusEl = document.getElementById('obsCmdStatus');
+    statusEl.textContent = 'Reverting to default placement…';
+    const params = Object.assign({}, OBS_DEFAULTS, { placements: DEFAULT_PLACEMENTS });
+    fetch('/api/obstacles/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+    })
+        .then(r => r.json())
+        .then(d => {
+            statusEl.textContent = d.status || 'Reverted to defaults';
+            setTimeout(() => { statusEl.textContent = ''; }, 4000);
+        })
+        .catch(() => {
+            statusEl.textContent = 'Revert failed — is the sim running?';
+        });
 });
 
 // ── Main loop ────────────────────────────────────────────────────────
