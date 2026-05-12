@@ -485,6 +485,13 @@ function buildFleetCard(idx) {
                 <input type="range" class="override-slider" min="1" max="25" step="0.5" value="8" data-fld="lidarSlider">
                 <span class="override-val" data-fld="lidarSliderVal">8.0 m</span>
             </div>
+            <div class="override-row override-row-checkbox">
+                <label class="override-label">Disable Evasion</label>
+                <label class="override-toggle">
+                    <input type="checkbox" data-fld="disableEvasion">
+                    <span class="override-toggle-label" data-fld="disableEvasionVal">Off</span>
+                </label>
+            </div>
         </details>`;
     // Bind control buttons
     const btnStop = card.querySelector('[data-fld="btnStop"]');
@@ -513,6 +520,12 @@ function buildFleetCard(idx) {
         _lidarTimer = setTimeout(() => {
             sendOverride('lidar_range', parseFloat(lidarSlider.value), idx);
         }, 200);
+    });
+
+    const disableEvasionCb = card.querySelector('[data-fld="disableEvasion"]');
+    disableEvasionCb.addEventListener('change', () => {
+        fld(card, 'disableEvasionVal').textContent = disableEvasionCb.checked ? 'On' : 'Off';
+        sendOverride('disable_evasion', disableEvasionCb.checked, idx);
     });
     return card;
 }
@@ -571,6 +584,12 @@ function updateFleetCard(card, data) {
     if (lidarSlider && document.activeElement !== lidarSlider && data.lidar_range != null) {
         lidarSlider.value = data.lidar_range;
         fld(card, 'lidarSliderVal').textContent = parseFloat(data.lidar_range).toFixed(1) + ' m';
+    }
+
+    const disableEvasionCb = card.querySelector('[data-fld="disableEvasion"]');
+    if (disableEvasionCb && data.disable_evasion != null) {
+        disableEvasionCb.checked = data.disable_evasion;
+        fld(card, 'disableEvasionVal').textContent = data.disable_evasion ? 'On' : 'Off';
     }
 }
 

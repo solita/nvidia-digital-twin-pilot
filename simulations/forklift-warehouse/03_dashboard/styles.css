@@ -448,6 +448,29 @@ canvas#map {
     margin-bottom: 0;
 }
 
+.override-row-checkbox {
+    grid-template-columns: 80px 1fr;
+}
+
+.override-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+}
+
+.override-toggle input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--accent, #4a9eff);
+    cursor: pointer;
+}
+
+.override-toggle-label {
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
 .override-label {
     font-size: 0.68rem;
     color: var(--muted);

@@ -325,6 +325,7 @@ async def run_forklift() -> None:
     frame         = 0
     paused        = False
     speed_override = None   # None = use nav's own speed; 0.0-1.0 = override fraction
+    disable_evasion = False  # True = hard-follow path, no obstacle avoidance
     reset_requested = False
 
     # ── Status indicator ring buffer (7 s window at assumed 60 Hz) ─────────
@@ -376,6 +377,10 @@ async def run_forklift() -> None:
                     _log("info", f"LIDAR range → {float(value):.1f} m", diag)
                 except (TypeError, ValueError):
                     pass
+            elif action == "disable_evasion":
+                disable_evasion = bool(value)
+                nav.disable_evasion = disable_evasion
+                _log("info", f"Disable evasion: {disable_evasion}", diag)
             elif action == "run_script" and value:
                 script_path = str(value)
                 # Remap host path to container path if needed
@@ -453,6 +458,8 @@ async def run_forklift() -> None:
             nav = NavController()
             lidar.reset_debounce()
             speed_override = None
+            disable_evasion = False
+            nav.disable_evasion = False
             paused = False
             frame = 0
             _status_buf.clear()
@@ -529,6 +536,7 @@ async def run_forklift() -> None:
                 "repulsion":    round(lidar_result.repulsion_steer, 1),
                 "speed_frac":   round(abs(target_vel / config.DRIVE_VELOCITY), 2),
                 "speed_override": speed_override,
+                "disable_evasion": disable_evasion,
                 "lidar_range":  lidar.max_range,
                 "lidar_slices": lidar_result.lidar_slices,
                 "waypoints":    config.WAYPOINTS,
@@ -566,9 +574,31 @@ async def run_forklift() -> None:
 # ── Task management ───────────────────────────────────────────────────────────
 
 _TASK_KEY = "_forklift_controller_task"
-_existing = getattr(asyncio.get_event_loop(), _TASK_KEY, None)
-if _existing and not _existing.done():
-    _existing.cancel()
+_STAGE_SUB_KEY = "__forklift_stage_sub__"
 
-_task = asyncio.ensure_future(run_forklift())
-setattr(asyncio.get_event_loop(), _TASK_KEY, _task)
+def _restart_forklift() -> None:
+    """Cancel the running task and launch a fresh run_forklift()."""
+    loop = asyncio.get_event_loop()
+    existing = getattr(loop, _TASK_KEY, None)
+    if existing and not existing.done():
+        existing.cancel()
+    carb.log_info("[forklift] Launching run_forklift()")
+    task = asyncio.ensure_future(run_forklift())
+    setattr(loop, _TASK_KEY, task)
+
+def _on_stage_event(event) -> None:
+    """Re-launch the controller when a new scene is opened."""
+    if event.type == int(omni.usd.StageEventType.OPENED):
+        carb.log_info("[forklift] Stage OPENED event — restarting controller")
+        _restart_forklift()
+
+# Subscribe to stage events (survives script re-runs via sys.modules key)
+_prev_sub = sys.modules.get(_STAGE_SUB_KEY)
+# Old sub is just dropped — Omniverse GCs it when the reference dies.
+sys.modules[_STAGE_SUB_KEY] = (
+    omni.usd.get_context()
+    .get_stage_event_stream()
+    .create_subscription_to_pop(_on_stage_event, name="forklift_stage_watcher")
+)
+
+_restart_forklift()
