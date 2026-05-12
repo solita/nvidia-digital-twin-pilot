@@ -1,4 +1,4 @@
-.PHONY: init check-ports dev dash dash-restart stop help
+.PHONY: init check-ports dev isaac dash dash-restart stop help
 .DEFAULT_GOAL := help
 
 # Isaac Sim image runs as isaac-sim (1234:1234); /isaac-sim is drwxr-x---
@@ -99,8 +99,16 @@ check-ports:
 		echo "All streaming ports are open."; \
 	fi
 
-## Start Isaac Sim container with WebRTC streaming on port 49100
+## Start Isaac Sim + dashboard (runs dashboard in background, then Isaac Sim in foreground)
 dev:
+	@echo "==> Starting dashboard on port 8080 in background..."
+	@fuser -k 8080/tcp 2>/dev/null || true
+	@cd simulations/forklift-warehouse/03_dashboard && nohup python3 -m uvicorn dashboard:app --host 0.0.0.0 --port 8080 > /tmp/dashboard.log 2>&1 &
+	@echo "Dashboard running (log: /tmp/dashboard.log)"
+	@$(MAKE) --no-print-directory isaac
+
+## Start Isaac Sim container only (WebRTC streaming on port 49100)
+isaac:
 	@docker stop isaac-sim 2>/dev/null || true
 	@docker rm -f isaac-sim 2>/dev/null || true
 	@PUBLIC_IP=$$(curl -s ifconfig.me) && \
@@ -112,6 +120,7 @@ dev:
 		-e "PRIVACY_CONSENT=Y" \
 		-e "ROS_DISTRO=jazzy" \
 		-e "RMW_IMPLEMENTATION=rmw_fastrtps_cpp" \
+		-e "PUBLIC_IP=$$PUBLIC_IP" \
 		--rm --network=host \
 		-v ~/docker/isaac-sim/cache/main:/isaac-sim/.cache:rw \
 		-v ~/docker/isaac-sim/cache/computecache:/isaac-sim/.nv/ComputeCache:rw \
@@ -121,9 +130,9 @@ dev:
 		-v ~/docker/isaac-sim/pkg:/isaac-sim/.local/share/ov/pkg:rw \
 		-u $(HOST_UID):$(HOST_GID) \
 		nvcr.io/nvidia/isaac-sim:5.1.0 \
-		-lc "export LD_LIBRARY_PATH=\$$LD_LIBRARY_PATH:/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib && ./runheadless.sh --/app/livestream/publicEndpointAddress=$$PUBLIC_IP --/app/livestream/port=49100"
+		-l /isaac-sim/.local/share/ov/data/nvidia-digital-twin-pilot/simulations/forklift-warehouse/start_sim.sh
 
-## Start the forklift dashboard on port 8080
+## Start the forklift dashboard on port 8080 (foreground)
 dash:
 	@fuser -k 8080/tcp 2>/dev/null || true
 	@cd simulations/forklift-warehouse/03_dashboard && python3 -m uvicorn dashboard:app --host 0.0.0.0 --port 8080

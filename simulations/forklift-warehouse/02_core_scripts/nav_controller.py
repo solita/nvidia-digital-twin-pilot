@@ -86,6 +86,7 @@ class NavController:
         # Public — readable by main loop for logging on arrival
         self.wp_index: int = 0
         self.lap:      int = 0
+        self.disable_evasion: bool = False  # hard-follow path, no obstacle avoidance
 
         # Internal nav state
         self._frame:              int   = 0
@@ -164,55 +165,60 @@ class NavController:
         self._prev_heading_err = heading_err
 
         # ── APF blend: PD attraction + LIDAR repulsion ─────────────────────────
-        apf_steer = max(-STEER_MAX, min(STEER_MAX, steer_cmd + lidar.repulsion_steer))
+        if self.disable_evasion:
+            apf_steer = steer_cmd  # no lateral repulsion — hard follow path
+        else:
+            apf_steer = max(-STEER_MAX, min(STEER_MAX, steer_cmd + lidar.repulsion_steer))
 
         # ── Turn-speed limiter ─────────────────────────────────────────────────
         # 100 % speed when |err| ≤ 15°, ramps to 50 % at |err| ≥ 60°
         turn_scale = max(0.5, 1.0 - max(0.0, abs(heading_err) - 15.0) / 90.0)
 
         # ── Stuck detection → may override everything ──────────────────────────
-        escape = self._update_stuck(fx, fy, heading_err, lidar)
-        if escape is not None:
-            vel, steer = escape
-            just_started = self._escape_just_started
-            self._escape_just_started = False
-            self._frame += 1
-            return DriveCommand(
-                target_velocity=vel,
-                steer_angle=steer,
-                speed_frac=abs(vel / DRIVE_VELOCITY) if DRIVE_VELOCITY else 0.0,
-                smooth_heading=self._smooth_heading,
-                target_hdg=target_hdg,
-                heading_err=heading_err,
-                steer_cmd_pd=steer_cmd,
-                wp_index=self.wp_index,
-                lap=self.lap,
-                dist_to_wp=dist,
-                escape_just_started=just_started,
-                is_escaping=True,
-            )
+        if not self.disable_evasion:
+            escape = self._update_stuck(fx, fy, heading_err, lidar)
+            if escape is not None:
+                vel, steer = escape
+                just_started = self._escape_just_started
+                self._escape_just_started = False
+                self._frame += 1
+                return DriveCommand(
+                    target_velocity=vel,
+                    steer_angle=steer,
+                    speed_frac=abs(vel / DRIVE_VELOCITY) if DRIVE_VELOCITY else 0.0,
+                    smooth_heading=self._smooth_heading,
+                    target_hdg=target_hdg,
+                    heading_err=heading_err,
+                    steer_cmd_pd=steer_cmd,
+                    wp_index=self.wp_index,
+                    lap=self.lap,
+                    dist_to_wp=dist,
+                    escape_just_started=just_started,
+                    is_escaping=True,
+                )
 
         # ── Heading-loss recovery → may override everything ────────────────────
-        recovery = self._update_heading_recovery(heading_err)
-        if recovery is not None:
-            vel, steer = recovery
-            self._frame += 1
-            return DriveCommand(
-                target_velocity=vel,
-                steer_angle=steer,
-                speed_frac=abs(vel / DRIVE_VELOCITY) if DRIVE_VELOCITY else 0.0,
-                smooth_heading=self._smooth_heading,
-                target_hdg=target_hdg,
-                heading_err=heading_err,
-                steer_cmd_pd=steer_cmd,
-                wp_index=self.wp_index,
-                lap=self.lap,
-                dist_to_wp=dist,
-                is_recovering=True,
-            )
+        if not self.disable_evasion:
+            recovery = self._update_heading_recovery(heading_err)
+            if recovery is not None:
+                vel, steer = recovery
+                self._frame += 1
+                return DriveCommand(
+                    target_velocity=vel,
+                    steer_angle=steer,
+                    speed_frac=abs(vel / DRIVE_VELOCITY) if DRIVE_VELOCITY else 0.0,
+                    smooth_heading=self._smooth_heading,
+                    target_hdg=target_hdg,
+                    heading_err=heading_err,
+                    steer_cmd_pd=steer_cmd,
+                    wp_index=self.wp_index,
+                    lap=self.lap,
+                    dist_to_wp=dist,
+                    is_recovering=True,
+                )
 
         # ── Normal drive ───────────────────────────────────────────────────────
-        if lidar.fwd_stop or lidar.fwd_slow:
+        if not self.disable_evasion and (lidar.fwd_stop or lidar.fwd_slow):
             if lidar.forward_min < LIDAR_HARD_STOP_DIST:
                 speed_frac = 0.0
             else:

@@ -485,6 +485,13 @@ function buildFleetCard(idx) {
                 <input type="range" class="override-slider" min="1" max="25" step="0.5" value="8" data-fld="lidarSlider">
                 <span class="override-val" data-fld="lidarSliderVal">8.0 m</span>
             </div>
+            <div class="override-row override-row-checkbox">
+                <label class="override-label">Disable Evasion</label>
+                <label class="override-toggle">
+                    <input type="checkbox" data-fld="disableEvasion">
+                    <span class="override-toggle-label" data-fld="disableEvasionVal">Off</span>
+                </label>
+            </div>
         </details>`;
     // Bind control buttons
     const btnStop = card.querySelector('[data-fld="btnStop"]');
@@ -513,6 +520,12 @@ function buildFleetCard(idx) {
         _lidarTimer = setTimeout(() => {
             sendOverride('lidar_range', parseFloat(lidarSlider.value), idx);
         }, 200);
+    });
+
+    const disableEvasionCb = card.querySelector('[data-fld="disableEvasion"]');
+    disableEvasionCb.addEventListener('change', () => {
+        fld(card, 'disableEvasionVal').textContent = disableEvasionCb.checked ? 'On' : 'Off';
+        sendOverride('disable_evasion', disableEvasionCb.checked, idx);
     });
     return card;
 }
@@ -571,6 +584,12 @@ function updateFleetCard(card, data) {
     if (lidarSlider && document.activeElement !== lidarSlider && data.lidar_range != null) {
         lidarSlider.value = data.lidar_range;
         fld(card, 'lidarSliderVal').textContent = parseFloat(data.lidar_range).toFixed(1) + ' m';
+    }
+
+    const disableEvasionCb = card.querySelector('[data-fld="disableEvasion"]');
+    if (disableEvasionCb && data.disable_evasion != null) {
+        disableEvasionCb.checked = data.disable_evasion;
+        fld(card, 'disableEvasionVal').textContent = data.disable_evasion ? 'On' : 'Off';
     }
 }
 
@@ -663,11 +682,42 @@ function pollControllerAlive() {
         .then(r => r.json())
         .then(d => {
             _controllerAlive = d.alive;
+            _updateStartOverlay();
         })
         .catch(() => {
             _controllerAlive = false;
+            _updateStartOverlay();
         });
 }
+
+// ── Start overlay (blur when controller is offline) ─────────────────
+function _updateStartOverlay() {
+    document.body.classList.toggle('controller-offline', !_controllerAlive);
+}
+
+document.getElementById('startBtn').addEventListener('click', () => {
+    const btn = document.getElementById('startBtn');
+    btn.disabled = true;
+    btn.textContent = 'Starting…';
+    fetch('/api/start-controller', { method: 'POST' })
+        .then(r => r.json())
+        .then(d => {
+            if (d.status === 'ok' || d.status === 'already_running') {
+                btn.textContent = 'Waiting for controller…';
+            } else {
+                btn.textContent = '⚠ ' + (d.detail || 'Failed — retry');
+                btn.disabled = false;
+            }
+        })
+        .catch(() => {
+            btn.textContent = '⚠ Failed — retry';
+            btn.disabled = false;
+        });
+});
+
+// Initial state: show overlay until first alive check completes
+_updateStartOverlay();
+
 pollControllerAlive();
 setInterval(pollControllerAlive, 3000);
 
@@ -743,6 +793,24 @@ function checkObstacleDirty() {
     document.getElementById('obsGenerate').disabled = false;
 }
 
+// Live-update obstacle mass in the simulation when weight sliders change
+let _weightUpdateTimer = null;
+function pushWeightUpdate() {
+    clearTimeout(_weightUpdateTimer);
+    _weightUpdateTimer = setTimeout(() => {
+        const weights = {};
+        document.querySelectorAll('.obs-asset-section').forEach(section => {
+            const kind = section.dataset.asset;
+            weights[kind] = parseInt(section.querySelector('[data-param="weight"]').value, 10);
+        });
+        fetch('/api/obstacles/update-weight', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(weights),
+        }).catch(() => { });
+    }, 300);
+}
+
 document.getElementById('obsRandomness').addEventListener('input', function () {
     document.getElementById('obsRandomnessVal').textContent = this.value + '%';
     checkObstacleDirty();
@@ -752,6 +820,7 @@ document.querySelectorAll('.obs-asset-section').forEach(section => {
     section.querySelector('[data-param="weight"]').addEventListener('input', function () {
         section.querySelector('[data-val="weight"]').textContent = this.value + ' kg';
         checkObstacleDirty();
+        pushWeightUpdate();
     });
     section.querySelector('[data-param="density"]').addEventListener('input', function () {
         section.querySelector('[data-val="density"]').textContent = this.value;

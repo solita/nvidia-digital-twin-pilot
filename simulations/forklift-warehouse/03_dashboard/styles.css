@@ -448,6 +448,29 @@ canvas#map {
     margin-bottom: 0;
 }
 
+.override-row-checkbox {
+    grid-template-columns: 80px 1fr;
+}
+
+.override-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+}
+
+.override-toggle input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--accent, #4a9eff);
+    cursor: pointer;
+}
+
+.override-toggle-label {
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
 .override-label {
     font-size: 0.68rem;
     color: var(--muted);
@@ -589,4 +612,55 @@ button.btn.btn-generate {
 
 .obs-asset-controls .override-row:last-child {
     margin-bottom: 0;
+}
+
+/* ── Start overlay (controller not running) ──────────────── */
+
+body.controller-offline .layout {
+    filter: blur(6px);
+    pointer-events: none;
+    user-select: none;
+}
+
+.start-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+    background: rgba(15, 18, 25, 0.45);
+}
+
+body.controller-offline .start-overlay {
+    display: flex;
+}
+
+.start-btn {
+    padding: 20px 56px;
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    border: none;
+    border-radius: 14px;
+    background: var(--green);
+    color: #000;
+    cursor: pointer;
+    box-shadow: 0 4px 24px rgba(76, 175, 125, 0.35);
+    transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+}
+
+.start-btn:hover {
+    transform: scale(1.05);
+    box-shadow: 0 6px 32px rgba(76, 175, 125, 0.5);
+}
+
+.start-btn:active {
+    transform: scale(0.97);
+    opacity: 0.85;
+}
+
+.start-btn:disabled {
+    opacity: 0.5;
+    cursor: wait;
 }
