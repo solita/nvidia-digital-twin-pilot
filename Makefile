@@ -112,6 +112,7 @@ dev:
 		-e "PRIVACY_CONSENT=Y" \
 		-e "ROS_DISTRO=jazzy" \
 		-e "RMW_IMPLEMENTATION=rmw_fastrtps_cpp" \
+		-e "PUBLIC_IP=$$PUBLIC_IP" \
 		--rm --network=host \
 		-v ~/docker/isaac-sim/cache/main:/isaac-sim/.cache:rw \
 		-v ~/docker/isaac-sim/cache/computecache:/isaac-sim/.nv/ComputeCache:rw \
@@ -121,7 +122,7 @@ dev:
 		-v ~/docker/isaac-sim/pkg:/isaac-sim/.local/share/ov/pkg:rw \
 		-u $(HOST_UID):$(HOST_GID) \
 		nvcr.io/nvidia/isaac-sim:5.1.0 \
-		-lc "export LD_LIBRARY_PATH=\$$LD_LIBRARY_PATH:/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib && ./runheadless.sh --/app/livestream/publicEndpointAddress=$$PUBLIC_IP --/app/livestream/port=49100"
+		-l /isaac-sim/.local/share/ov/data/nvidia-digital-twin-pilot/simulations/forklift-warehouse/start_sim.sh
 
 ## Start the forklift dashboard on port 8080
 dash:
