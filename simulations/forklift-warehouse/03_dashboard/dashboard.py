@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import pathlib
+import socket
 import urllib.request
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -166,6 +167,85 @@ def controller_alive():
         return JSONResponse({"alive": True})
     except Exception:
         return JSONResponse({"alive": False})
+
+
+# ── Start controller via Isaac Sim code-editor extension (TCP 8226) ────────────
+_ISAACSIM_CODE_PORT = 8226
+_LAUNCHER_SCRIPT = (
+    "/home/ubuntu/docker/isaac-sim/data/nvidia-digital-twin-pilot/"
+    "simulations/forklift-warehouse/02_core_scripts/forklift_launcher.py"
+)
+
+
+def _send_script_to_isaac(script_text: str, timeout: float = 5.0) -> dict:
+    """Send Python code to Isaac Sim's VS Code code-editor extension via TCP."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect(("127.0.0.1", _ISAACSIM_CODE_PORT))
+        sock.sendall(script_text.encode("utf-8"))
+        # Read response (JSON)
+        chunks: list[bytes] = []
+        while True:
+            try:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            except socket.timeout:
+                break
+        raw = b"".join(chunks)
+        if raw:
+            return json.loads(raw)
+        return {"status": "ok", "output": "(no response)"}
+    finally:
+        sock.close()
+
+
+@app.post("/api/start-controller", response_class=JSONResponse)
+def start_controller():
+    """Launch forklift_launcher.py inside Isaac Sim via the code-editor extension."""
+    # If controller is already running, skip
+    try:
+        req = urllib.request.Request("http://localhost:8081/status", method="GET")
+        with urllib.request.urlopen(req, timeout=1):
+            pass
+        return JSONResponse({"status": "already_running"})
+    except Exception:
+        pass
+
+    # Read the launcher script and send it to Isaac Sim
+    try:
+        with open(_LAUNCHER_SCRIPT, encoding="utf-8") as fh:
+            script_text = fh.read()
+    except FileNotFoundError:
+        return JSONResponse(
+            {"status": "error", "detail": "Launcher script not found"},
+            status_code=500,
+        )
+
+    try:
+        result = _send_script_to_isaac(script_text)
+        status = result.get("status", "unknown")
+        if status == "error":
+            return JSONResponse(
+                {"status": "error", "detail": result.get("output", "Unknown error")},
+                status_code=500,
+            )
+        return JSONResponse({"status": "ok", "detail": result.get("output", "")})
+    except ConnectionRefusedError:
+        return JSONResponse(
+            {"status": "error", "detail": "Isaac Sim not running (port 8226 refused)"},
+            status_code=503,
+        )
+    except socket.timeout:
+        # Timeout is expected — the launcher runs async and may not respond immediately
+        return JSONResponse({"status": "ok", "detail": "Script sent (async)"})
+    except Exception as exc:
+        return JSONResponse(
+            {"status": "error", "detail": str(exc)},
+            status_code=500,
+        )
 
 
 @app.post("/api/cmd/pause", response_class=PlainTextResponse)

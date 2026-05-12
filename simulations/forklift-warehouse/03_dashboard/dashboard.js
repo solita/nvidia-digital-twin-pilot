@@ -663,11 +663,42 @@ function pollControllerAlive() {
         .then(r => r.json())
         .then(d => {
             _controllerAlive = d.alive;
+            _updateStartOverlay();
         })
         .catch(() => {
             _controllerAlive = false;
+            _updateStartOverlay();
         });
 }
+
+// ── Start overlay (blur when controller is offline) ─────────────────
+function _updateStartOverlay() {
+    document.body.classList.toggle('controller-offline', !_controllerAlive);
+}
+
+document.getElementById('startBtn').addEventListener('click', () => {
+    const btn = document.getElementById('startBtn');
+    btn.disabled = true;
+    btn.textContent = 'Starting…';
+    fetch('/api/start-controller', { method: 'POST' })
+        .then(r => r.json())
+        .then(d => {
+            if (d.status === 'ok' || d.status === 'already_running') {
+                btn.textContent = 'Waiting for controller…';
+            } else {
+                btn.textContent = '⚠ ' + (d.detail || 'Failed — retry');
+                btn.disabled = false;
+            }
+        })
+        .catch(() => {
+            btn.textContent = '⚠ Failed — retry';
+            btn.disabled = false;
+        });
+});
+
+// Initial state: show overlay until first alive check completes
+_updateStartOverlay();
+
 pollControllerAlive();
 setInterval(pollControllerAlive, 3000);
 
