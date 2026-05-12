@@ -774,6 +774,24 @@ function checkObstacleDirty() {
     document.getElementById('obsGenerate').disabled = false;
 }
 
+// Live-update obstacle mass in the simulation when weight sliders change
+let _weightUpdateTimer = null;
+function pushWeightUpdate() {
+    clearTimeout(_weightUpdateTimer);
+    _weightUpdateTimer = setTimeout(() => {
+        const weights = {};
+        document.querySelectorAll('.obs-asset-section').forEach(section => {
+            const kind = section.dataset.asset;
+            weights[kind] = parseInt(section.querySelector('[data-param="weight"]').value, 10);
+        });
+        fetch('/api/obstacles/update-weight', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(weights),
+        }).catch(() => { });
+    }, 300);
+}
+
 document.getElementById('obsRandomness').addEventListener('input', function () {
     document.getElementById('obsRandomnessVal').textContent = this.value + '%';
     checkObstacleDirty();
@@ -783,6 +801,7 @@ document.querySelectorAll('.obs-asset-section').forEach(section => {
     section.querySelector('[data-param="weight"]').addEventListener('input', function () {
         section.querySelector('[data-val="weight"]').textContent = this.value + ' kg';
         checkObstacleDirty();
+        pushWeightUpdate();
     });
     section.querySelector('[data-param="density"]').addEventListener('input', function () {
         section.querySelector('[data-val="density"]').textContent = this.value;

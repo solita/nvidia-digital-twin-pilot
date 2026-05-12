@@ -304,6 +304,19 @@ def generate_obstacles(body: dict):
     return JSONResponse({"status": f"Sent to controller: {result}"})
 
 
+@app.post("/api/obstacles/update-weight", response_class=JSONResponse)
+def update_obstacle_weight(body: dict):
+    """Live-update obstacle masses without re-spawning.
+
+    body: {"cone": 5, "box": 20, "pallet": 200, "pushcart": 80}
+    """
+    weights = {k: v for k, v in body.items() if isinstance(v, (int, float))}
+    if not weights:
+        return JSONResponse({"status": "no weights provided"}, status_code=400)
+    result = _post_controller_cmd("update_mass", weights)
+    return JSONResponse({"status": result})
+
+
 @app.websocket("/ws")
 async def ws_state(websocket: WebSocket):
     await websocket.accept()

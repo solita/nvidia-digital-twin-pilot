@@ -390,6 +390,23 @@ async def run_forklift() -> None:
                     _log("info", f"run_script: completed OK", diag)
                 except Exception as _exc:
                     _log("error", f"run_script FAILED: {_exc}", diag)
+            elif action == "update_mass" and value:
+                # value = {"cone": 5, "box": 20, ...}
+                try:
+                    obs_group = stage.GetPrimAtPath("/World/Obstacles")
+                    if obs_group.IsValid():
+                        updated = 0
+                        for child in obs_group.GetChildren():
+                            name = child.GetName()  # e.g. "cone_01"
+                            kind = name.rsplit("_", 1)[0]  # e.g. "cone"
+                            if kind in value:
+                                mass_val = max(float(value[kind]), 0.1)
+                                mass_api = UsdPhysics.MassAPI.Apply(child)
+                                mass_api.GetMassAttr().Set(mass_val)
+                                updated += 1
+                        _log("info", f"update_mass: updated {updated} obstacles", diag)
+                except Exception as _exc:
+                    _log("error", f"update_mass FAILED: {_exc}", diag)
             elif action == "reset_location":
                 reset_requested = True
 

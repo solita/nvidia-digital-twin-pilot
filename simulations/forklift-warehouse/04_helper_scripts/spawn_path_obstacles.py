@@ -202,9 +202,11 @@ else:
     def _apply_collision_apis(target_prim):
         if not target_prim.HasAPI(UsdPhysics.CollisionAPI):
             UsdPhysics.CollisionAPI.Apply(target_prim)
-        if not target_prim.HasAPI(UsdPhysics.MeshCollisionAPI):
-            mesh_col = UsdPhysics.MeshCollisionAPI.Apply(target_prim)
-            mesh_col.GetApproximationAttr().Set("convexHull")
+        # Always ensure convexHull approximation — referenced assets may
+        # already carry MeshCollisionAPI with triangle-mesh approximation
+        # which is invalid for dynamic rigid bodies.
+        mesh_col = UsdPhysics.MeshCollisionAPI.Apply(target_prim)
+        mesh_col.GetApproximationAttr().Set("convexHull")
 
     def _apply_collision_to_meshes(root_prim):
         """Apply collision and mesh-collision APIs to all mesh descendants."""
@@ -322,6 +324,7 @@ else:
             asset_url = random.choice(CONE_ASSETS)
             prim.GetReferences().AddReference(asset_url)
             _apply_collision_apis(prim)
+            _apply_collision_to_meshes(prim)
         elif kind == "box":
             if _size != 1.0:
                 xf.AddScaleOp(UsdGeom.XformOp.PrecisionDouble).Set(
@@ -330,6 +333,7 @@ else:
             asset_url = random.choice(BOX_ASSETS)
             prim.GetReferences().AddReference(asset_url)
             _apply_collision_apis(prim)
+            _apply_collision_to_meshes(prim)
         elif kind == "pallet":
             _pallet_scale = STACK_SCALE * _size
             xf.AddScaleOp(UsdGeom.XformOp.PrecisionDouble).Set(
@@ -358,6 +362,7 @@ else:
                     bin_y = (row - half) * STACK_BIN_SPACING
                     bin_xf.AddTranslateOp().Set(Gf.Vec3d(bin_x, bin_y, STACK_BINS_Z_OFFSET))
                     _apply_collision_apis(bin_prim)
+            _apply_collision_to_meshes(prim)
         elif kind == "pushcart":
             if not add_obs_enabled:
                 carb.log_warn(
@@ -374,10 +379,14 @@ else:
         else:
             carb.log_warn(f"[spawn_path_obstacles] Unknown obstacle kind '{kind}' at index {idx}; skipping")
 
+        # Apply rigid-body dynamics so obstacles respond to gravity and forces.
+        # Without RigidBodyAPI the prims are static colliders and will float.
+        if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            UsdPhysics.RigidBodyAPI.Apply(prim)
+
         # Apply physics mass from weight slider
-        if _weight > 0:
-            mass_api = UsdPhysics.MassAPI.Apply(prim)
-            mass_api.GetMassAttr().Set(_weight)
+        mass_api = UsdPhysics.MassAPI.Apply(prim)
+        mass_api.GetMassAttr().Set(max(_weight, 0.1))  # ensure a minimum mass
 
     # Export obstacle manifest so the dashboard can pick it up dynamically.
     # Compute bounding boxes so the dashboard draws each obstacle to scale.
